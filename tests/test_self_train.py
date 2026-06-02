@@ -7,12 +7,17 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+# ultralytics is an optional runtime dep; stub it out so unit tests don't require
+# a GPU environment to import self_train.
+if "ultralytics" not in sys.modules:
+    sys.modules["ultralytics"] = MagicMock()
+
 from self_train import (
     compute_intersection,
     get_score_threshold,
-    load_yolo_xyxy,
-    write_yolo_from_xyxy,
 )
+from yolo_io import load_yolo_xyxy, write_yolo_labels as write_yolo_from_xyxy
 
 
 # ── TestScoreThreshold (D2) ───────────────────────────────────────────────────

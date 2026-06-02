@@ -26,6 +26,8 @@ import torch
 from torchvision.ops import box_iou
 from ultralytics import YOLO
 
+from yolo_io import load_yolo_xyxy, write_yolo_labels
+
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
@@ -61,41 +63,6 @@ def compute_intersection(yolo_boxes: torch.Tensor, gdino_boxes: torch.Tensor,
     keep = (iou.max(dim=1).values > iou_thr)
     return yolo_boxes[keep]
 
-
-# ── Label I/O ─────────────────────────────────────────────────────────────────
-
-def load_yolo_xyxy(label_path: Path, img_w: int, img_h: int) -> torch.Tensor:
-    """Load YOLO txt → (N, 4) xyxy in pixel coords."""
-    if not label_path.exists() or label_path.stat().st_size == 0:
-        return torch.zeros(0, 4)
-    rows = []
-    for line in label_path.read_text().strip().splitlines():
-        parts = line.split()
-        if len(parts) != 5:
-            continue
-        _, cx, cy, w, h = map(float, parts)
-        x0 = (cx - w / 2) * img_w
-        y0 = (cy - h / 2) * img_h
-        x1 = (cx + w / 2) * img_w
-        y1 = (cy + h / 2) * img_h
-        rows.append([x0, y0, x1, y1])
-    return torch.tensor(rows, dtype=torch.float32) if rows else torch.zeros(0, 4)
-
-
-def write_yolo_from_xyxy(label_path: Path, boxes_xyxy: torch.Tensor,
-                         img_w: int, img_h: int) -> None:
-    label_path.parent.mkdir(parents=True, exist_ok=True)
-    if len(boxes_xyxy) == 0:
-        label_path.write_text("")
-        return
-    lines = []
-    for x0, y0, x1, y1 in boxes_xyxy.tolist():
-        cx = (x0 + x1) / 2 / img_w
-        cy = (y0 + y1) / 2 / img_h
-        w  = (x1 - x0) / img_w
-        h  = (y1 - y0) / img_h
-        lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-    label_path.write_text("\n".join(lines) + "\n")
 
 
 # ── Core iteration step ───────────────────────────────────────────────────────
@@ -183,7 +150,7 @@ def run_inference_and_filter(weights: str, frames_base: Path,
                     stats["boxes_fallback"] += len(gdino_boxes)
                     final_boxes = gdino_boxes
 
-            write_yolo_from_xyxy(out_lbl_dir / f"{img_path.stem}.txt",
+            write_yolo_labels(out_lbl_dir / f"{img_path.stem}.txt",
                                  final_boxes, img_w, img_h)
 
     log.info(

@@ -18,25 +18,10 @@ import torch
 from torchvision.ops import box_iou
 from ultralytics import YOLO
 
+from yolo_io import load_yolo_xyxy
+
 VIDEOS = ["eastbound_20240319", "westbound_20240319",
           "eastbound_20240530", "westbound_20240530"]
-
-
-def load_yolo_xyxy(label_path: Path, img_w: int, img_h: int) -> torch.Tensor:
-    if not label_path.exists() or label_path.stat().st_size == 0:
-        return torch.zeros(0, 4)
-    rows = []
-    for line in label_path.read_text().strip().splitlines():
-        parts = line.split()
-        if len(parts) != 5:
-            continue
-        _, cx, cy, w, h = map(float, parts)
-        x0 = (cx - w / 2) * img_w
-        y0 = (cy - h / 2) * img_h
-        x1 = (cx + w / 2) * img_w
-        y1 = (cy + h / 2) * img_h
-        rows.append([x0, y0, x1, y1])
-    return torch.tensor(rows, dtype=torch.float32) if rows else torch.zeros(0, 4)
 
 
 def divergence_score(gdino: torch.Tensor, yolo: torch.Tensor, iou_thr: float = 0.3) -> tuple:

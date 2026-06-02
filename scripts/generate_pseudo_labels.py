@@ -22,6 +22,7 @@ from tqdm import tqdm
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from gdino_utils import gdino_preprocess  # noqa: E402  (scripts/ on sys.path)
+from yolo_io import xyxy_to_yolo, write_yolo_labels
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -80,27 +81,6 @@ def filter_boxes(boxes_xyxy: torch.Tensor, scores: torch.Tensor,
     keep = nms(boxes.float(), scores.float(), iou_thr)
     return boxes[keep], scores[keep]
 
-
-def xyxy_to_yolo(x0, y0, x1, y1, img_w, img_h):
-    cx = (x0 + x1) / 2 / img_w
-    cy = (y0 + y1) / 2 / img_h
-    w  = (x1 - x0) / img_w
-    h  = (y1 - y0) / img_h
-    return cx, cy, w, h
-
-
-def write_label_file(label_path: Path, boxes_xyxy: torch.Tensor,
-                     img_w: int, img_h: int) -> None:
-    label_path.parent.mkdir(parents=True, exist_ok=True)
-    if len(boxes_xyxy) == 0:
-        label_path.write_text("")
-        return
-    lines = []
-    for box in boxes_xyxy.tolist():
-        x0, y0, x1, y1 = box
-        cx, cy, w, h = xyxy_to_yolo(x0, y0, x1, y1, img_w, img_h)
-        lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-    label_path.write_text("\n".join(lines) + "\n")
 
 
 # ── Inference ─────────────────────────────────────────────────────────────────
@@ -173,14 +153,14 @@ def run_inference(frame_dir: Path, out_label_dir: Path, out_image_dir: Path,
             label_path = out_label_dir / f"{stem}.txt"
 
             if not keep:
-                write_label_file(label_path, torch.zeros(0, 4), img_w, img_h)
+                write_yolo_labels(label_path, torch.zeros(0, 4), img_w, img_h)
                 continue
 
             boxes  = res["boxes"].cpu()
             scores = res["scores"].cpu()
             boxes, scores = filter_boxes(boxes, scores, score_thr, iou_thr)
 
-            write_label_file(label_path, boxes, img_w, img_h)
+            write_yolo_labels(label_path, boxes, img_w, img_h)
             if len(boxes) > 0:
                 stats["with_bbox"] += 1
 
@@ -252,7 +232,7 @@ def run_inference_flat(img_dir: Path, out_label_dir: Path,
             boxes, scores = filter_boxes(boxes, scores, score_thr, iou_thr)
 
             label_path = out_label_dir / f"{src.stem}.txt"
-            write_label_file(label_path, boxes, img_w, img_h)
+            write_yolo_labels(label_path, boxes, img_w, img_h)
 
             if len(boxes) == 0:
                 stats["no_bbox"] += 1
