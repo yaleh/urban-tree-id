@@ -46,29 +46,44 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 # Lazy references populated the first time _ensure_pp_imports() is called.
 # Tests can patch these names directly on this module.
 gdino_forward_batch    = None
+gdino_preprocess_batch = None
 detect_yolo_batch      = None
 make_crops_gpu_batch   = None
 predict_species_batch  = None
 
 
 def _ensure_pp_imports():
-    """Import predict_pipeline symbols once and bind them to module-level names."""
-    global gdino_forward_batch, detect_yolo_batch, make_crops_gpu_batch, predict_species_batch
-    if gdino_forward_batch is not None:
+    """Import predict_pipeline symbols once and bind them to module-level names.
+
+    Only fills slots that are still None; slots already set by tests (via patch)
+    are left untouched so mock patches are not overwritten.
+    """
+    global gdino_forward_batch, gdino_preprocess_batch, detect_yolo_batch, \
+           make_crops_gpu_batch, predict_species_batch
+    _all_set = (
+        gdino_forward_batch    is not None and
+        gdino_preprocess_batch is not None and
+        detect_yolo_batch      is not None and
+        make_crops_gpu_batch   is not None and
+        predict_species_batch  is not None
+    )
+    if _all_set:
         return
     _scripts = Path(__file__).parent
     if str(_scripts) not in sys.path:
         sys.path.insert(0, str(_scripts))
     from predict_pipeline import (
         gdino_forward_batch    as _gfb,
+        gdino_preprocess_batch as _gpb,
         detect_yolo_batch      as _dyb,
         make_crops_gpu_batch   as _mcgb,
         predict_species_batch  as _psb,
     )
-    gdino_forward_batch   = _gfb
-    detect_yolo_batch     = _dyb
-    make_crops_gpu_batch  = _mcgb
-    predict_species_batch = _psb
+    if gdino_forward_batch    is None: gdino_forward_batch    = _gfb
+    if gdino_preprocess_batch is None: gdino_preprocess_batch = _gpb
+    if detect_yolo_batch      is None: detect_yolo_batch      = _dyb
+    if make_crops_gpu_batch   is None: make_crops_gpu_batch   = _mcgb
+    if predict_species_batch  is None: predict_species_batch  = _psb
 
 # Per-detector batch size defaults tuned to ~12 GB VRAM
 _DEFAULT_BATCH = {"gdino": 8, "yolo": 64, "rf-detr": 64}
@@ -198,6 +213,118 @@ def _score_batch(
         f"batch n={len(batch_paths)}  correct={n_batch_correct}/{len(batch_paths)}"
         f"  running_top1={top1_running:.3f}  no_det={n_no_detection}"
     )
+    return n_total, n_correct, n_no_detection, per_class
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────────────
+
+def _tensor_to_pil(t: "torch.Tensor") -> "Image.Image":
+    """CHW uint8 tensor → PIL Image."""
+    from PIL import Image as _PIL
+    return _PIL.fromarray(t.permute(1, 2, 0).numpy())
+
+
+def _run_detector_loop(
+    detector: str,
+    loader,
+    models: dict,
+    device: str,
+    gt_labels_map: dict,
+    throughput_only: bool,
+    yolo_imgsz: int,
+) -> "tuple[int, int, int, dict]":
+    """Run batched detect → crop → embed → predict → score over a DataLoader.
+
+    Handles all three detector branches (gdino / rf-detr / yolo) with their
+    respective double-buffer strategies.  Returns (n_total, n_correct,
+    n_no_detection, per_class).
+    """
+    import torch
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor
+
+    _ensure_pp_imports()
+
+    n_total        = 0
+    n_correct      = 0
+    n_no_detection = 0
+    per_class: dict = defaultdict(lambda: {"correct": 0, "total": 0})
+
+    def _process_batch(tensors, paths, batch_boxes):
+        nonlocal n_total, n_correct, n_no_detection, per_class
+        imgs_gpu     = [t.float().div(255.0).to(device, non_blocking=True) for t in tensors]
+        crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes)
+        with torch.no_grad():
+            feat = models["dinov2"].forward_features(crops_tensor)
+        embeddings   = feat["x_norm_clstoken"].cpu().float().numpy()
+        predictions  = predict_species_batch(embeddings, models["clf"])
+        batch_n_boxes = [len(b) for b in batch_boxes]
+        n_total, n_correct, n_no_detection, per_class = _score_batch(
+            paths, predictions, batch_n_boxes, gt_labels_map,
+            n_total, n_correct, n_no_detection, per_class, log.info,
+            throughput_only=throughput_only,
+        )
+
+    if detector == "gdino":
+        # Double-buffer: proc() runs in a thread while GPU processes the previous batch.
+        with ThreadPoolExecutor(max_workers=1) as proc_pool:
+            loader_iter = iter(loader)
+            cur_tensors, cur_paths = next(loader_iter)
+            cur_pil          = [_tensor_to_pil(t) for t in cur_tensors]
+            cur_target_sizes = [(t.shape[1], t.shape[2]) for t in cur_tensors]
+            cur_proc_future  = proc_pool.submit(
+                gdino_preprocess_batch, cur_pil, models["gdino_proc"])
+
+            for nxt_tensors, nxt_paths in loader_iter:
+                nxt_pil          = [_tensor_to_pil(t) for t in nxt_tensors]
+                nxt_target_sizes = [(t.shape[1], t.shape[2]) for t in nxt_tensors]
+                nxt_proc_future  = proc_pool.submit(
+                    gdino_preprocess_batch, nxt_pil, models["gdino_proc"])
+
+                inputs_cpu  = cur_proc_future.result()
+                batch_boxes = gdino_forward_batch(
+                    inputs_cpu, cur_target_sizes, device,
+                    models["gdino_proc"], models["gdino_model"])
+                _process_batch(cur_tensors, cur_paths, batch_boxes)
+
+                cur_tensors, cur_paths = nxt_tensors, nxt_paths
+                cur_target_sizes       = nxt_target_sizes
+                cur_proc_future        = nxt_proc_future
+
+            # Last batch
+            inputs_cpu  = cur_proc_future.result()
+            batch_boxes = gdino_forward_batch(
+                inputs_cpu, cur_target_sizes, device,
+                models["gdino_proc"], models["gdino_model"])
+            _process_batch(cur_tensors, cur_paths, batch_boxes)
+
+    elif detector == "rf-detr":
+        # Double-buffer: preprocess_cpu() in thread, forward on GPU.
+        rfdetr = models["rfdetr_detector"]
+        with ThreadPoolExecutor(max_workers=1) as proc_pool:
+            loader_iter = iter(loader)
+            cur_tensors, cur_paths = next(loader_iter)
+            cur_proc_future = proc_pool.submit(rfdetr.preprocess_cpu, cur_tensors)
+
+            for nxt_tensors, nxt_paths in loader_iter:
+                nxt_proc_future        = proc_pool.submit(rfdetr.preprocess_cpu, nxt_tensors)
+                tensors_cpu, orig_sizes = cur_proc_future.result()
+                batch_boxes            = rfdetr.forward_from_cpu_tensors(tensors_cpu, orig_sizes)
+                _process_batch(cur_tensors, cur_paths, batch_boxes)
+                cur_tensors, cur_paths = nxt_tensors, nxt_paths
+                cur_proc_future        = nxt_proc_future
+
+            # Last batch
+            tensors_cpu, orig_sizes = cur_proc_future.result()
+            batch_boxes             = rfdetr.forward_from_cpu_tensors(tensors_cpu, orig_sizes)
+            _process_batch(cur_tensors, cur_paths, batch_boxes)
+
+    else:  # yolo — Ultralytics handles its own batching
+        for batch_tensors, batch_paths in loader:
+            batch_np    = [t.permute(1, 2, 0).contiguous().numpy() for t in batch_tensors]
+            batch_boxes = detect_yolo_batch(batch_np, models["yolo_model"], imgsz=yolo_imgsz)
+            _process_batch(batch_tensors, batch_paths, batch_boxes)
+
     return n_total, n_correct, n_no_detection, per_class
 
 
@@ -471,18 +598,9 @@ def main():
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
 
-    import numpy as np
     import torch
-    from concurrent.futures import ThreadPoolExecutor
     from torch.utils.data import DataLoader
-    from PIL import Image
-    from predict_pipeline import (
-        load_models,
-        detect_yolo_batch,
-        gdino_preprocess_batch, gdino_forward_batch,
-        make_crops_gpu_batch,
-        predict_species_batch,
-    )
+    from predict_pipeline import load_models
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Device: {device}  batch_size: {args.batch_size}  workers: {args.workers}")
@@ -578,146 +696,12 @@ def main():
         persistent_workers     = (args.workers > 0),
     )
 
-    n_total        = 0
-    n_correct      = 0
-    n_no_detection = 0
-    per_class: dict[str, dict] = defaultdict(lambda: {"correct": 0, "total": 0})
-
-    def _tensor_to_pil(t: "torch.Tensor") -> "Image.Image":
-        """CHW uint8 tensor → PIL Image (cheap, avoids double decode)."""
-        return Image.fromarray(t.permute(1, 2, 0).numpy())
-
     t0 = time.perf_counter()
 
-    # ── GDino: double-buffer proc() in a thread (Method B) ───────────────────
-    # proc() is CPU-bound (~20ms/batch); overlapping it with the GPU forward of
-    # the previous batch hides it from the critical path entirely.
-    if args.detector == "gdino":
-        with ThreadPoolExecutor(max_workers=1) as proc_pool:
-            loader_iter = iter(loader)
-
-            # Bootstrap: prefetch proc() for the very first batch
-            cur_tensors, cur_paths = next(loader_iter)
-            cur_pil = [_tensor_to_pil(t) for t in cur_tensors]
-            cur_target_sizes = [(t.shape[1], t.shape[2]) for t in cur_tensors]
-            cur_proc_future  = proc_pool.submit(gdino_preprocess_batch, cur_pil,
-                                                models["gdino_proc"])
-
-            for nxt_tensors, nxt_paths in loader_iter:
-                nxt_pil = [_tensor_to_pil(t) for t in nxt_tensors]
-                nxt_target_sizes = [(t.shape[1], t.shape[2]) for t in nxt_tensors]
-
-                # Submit proc() for the NEXT batch to thread — overlaps GPU forward below
-                nxt_proc_future = proc_pool.submit(gdino_preprocess_batch, nxt_pil,
-                                                   models["gdino_proc"])
-
-                # ── Process CURRENT batch ────────────────────────────────────
-                imgs_gpu    = [t.float().div(255.0).to(device, non_blocking=True) for t in cur_tensors]
-                inputs_cpu  = cur_proc_future.result()   # almost certainly done by now
-                batch_boxes = gdino_forward_batch(inputs_cpu, cur_target_sizes, device,
-                                                  models["gdino_proc"], models["gdino_model"])
-                batch_n_boxes = [len(b) for b in batch_boxes]
-                crops_tensor  = make_crops_gpu_batch(imgs_gpu, batch_boxes)
-                with torch.no_grad():
-                    feat = models["dinov2"].forward_features(crops_tensor)
-                embeddings  = feat["x_norm_clstoken"].cpu().float().numpy()
-                predictions = predict_species_batch(embeddings, models["clf"])
-                n_total, n_correct, n_no_detection, per_class = _score_batch(
-                    cur_paths, predictions, batch_n_boxes, gt_labels_map,
-                    n_total, n_correct, n_no_detection, per_class, log.info,
-                    throughput_only=args.throughput_only,
-                )
-
-                cur_tensors, cur_paths      = nxt_tensors, nxt_paths
-                cur_target_sizes            = nxt_target_sizes
-                cur_proc_future             = nxt_proc_future
-
-            # ── Last batch ───────────────────────────────────────────────────
-            imgs_gpu    = [t.float().div(255.0).to(device, non_blocking=True) for t in cur_tensors]
-            inputs_cpu  = cur_proc_future.result()
-            batch_boxes = gdino_forward_batch(inputs_cpu, cur_target_sizes, device,
-                                              models["gdino_proc"], models["gdino_model"])
-            batch_n_boxes = [len(b) for b in batch_boxes]
-            crops_tensor  = make_crops_gpu_batch(imgs_gpu, batch_boxes)
-            with torch.no_grad():
-                feat = models["dinov2"].forward_features(crops_tensor)
-            embeddings  = feat["x_norm_clstoken"].cpu().float().numpy()
-            predictions = predict_species_batch(embeddings, models["clf"])
-            n_total, n_correct, n_no_detection, per_class = _score_batch(
-                cur_paths, predictions, batch_n_boxes, gt_labels_map,
-                n_total, n_correct, n_no_detection, per_class, log.info,
-                throughput_only=args.throughput_only,
-            )
-
-    elif args.detector == "rf-detr":
-        # ── RF-DETR: double-buffer preprocess_cpu() in a thread ─────────────
-        # preprocess_cpu() does float conversion + normalization on CPU (~5-10ms/batch).
-        # Overlapping it with the GPU forward of the previous batch hides it entirely.
-        rfdetr = models["rfdetr_detector"]
-        with ThreadPoolExecutor(max_workers=1) as proc_pool:
-            loader_iter = iter(loader)
-
-            cur_tensors, cur_paths = next(loader_iter)
-            cur_proc_future = proc_pool.submit(rfdetr.preprocess_cpu, cur_tensors)
-
-            for nxt_tensors, nxt_paths in loader_iter:
-                nxt_proc_future = proc_pool.submit(rfdetr.preprocess_cpu, nxt_tensors)
-
-                tensors_cpu, orig_sizes = cur_proc_future.result()
-                batch_boxes   = rfdetr.forward_from_cpu_tensors(tensors_cpu, orig_sizes)
-                batch_n_boxes = [len(b) for b in batch_boxes]
-                imgs_gpu      = [t.float().div(255.0).to(device, non_blocking=True)
-                                 for t in cur_tensors]
-                crops_tensor  = make_crops_gpu_batch(imgs_gpu, batch_boxes)
-                with torch.no_grad():
-                    feat = models["dinov2"].forward_features(crops_tensor)
-                embeddings  = feat["x_norm_clstoken"].cpu().float().numpy()
-                predictions = predict_species_batch(embeddings, models["clf"])
-                n_total, n_correct, n_no_detection, per_class = _score_batch(
-                    cur_paths, predictions, batch_n_boxes, gt_labels_map,
-                    n_total, n_correct, n_no_detection, per_class, log.info,
-                    throughput_only=args.throughput_only,
-                )
-
-                cur_tensors, cur_paths = nxt_tensors, nxt_paths
-                cur_proc_future        = nxt_proc_future
-
-            # ── Last batch ───────────────────────────────────────────────────
-            tensors_cpu, orig_sizes = cur_proc_future.result()
-            batch_boxes   = rfdetr.forward_from_cpu_tensors(tensors_cpu, orig_sizes)
-            batch_n_boxes = [len(b) for b in batch_boxes]
-            imgs_gpu      = [t.float().div(255.0).to(device, non_blocking=True)
-                             for t in cur_tensors]
-            crops_tensor  = make_crops_gpu_batch(imgs_gpu, batch_boxes)
-            with torch.no_grad():
-                feat = models["dinov2"].forward_features(crops_tensor)
-            embeddings  = feat["x_norm_clstoken"].cpu().float().numpy()
-            predictions = predict_species_batch(embeddings, models["clf"])
-            n_total, n_correct, n_no_detection, per_class = _score_batch(
-                cur_paths, predictions, batch_n_boxes, gt_labels_map,
-                n_total, n_correct, n_no_detection, per_class, log.info,
-                throughput_only=args.throughput_only,
-            )
-
-    else:
-        # ── YOLO: simple loop (Ultralytics handles its own batching internally) ──
-        for batch_tensors, batch_paths in loader:
-            imgs_gpu = [t.float().div(255.0).to(device, non_blocking=True) for t in batch_tensors]
-
-            batch_np    = [t.permute(1, 2, 0).contiguous().numpy() for t in batch_tensors]
-            batch_boxes = detect_yolo_batch(batch_np, models["yolo_model"], imgsz=yolo_imgsz)
-            batch_n_boxes = [len(b) for b in batch_boxes]
-
-            crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes)
-            with torch.no_grad():
-                feat = models["dinov2"].forward_features(crops_tensor)
-            embeddings = feat["x_norm_clstoken"].cpu().float().numpy()
-            predictions = predict_species_batch(embeddings, models["clf"])
-            n_total, n_correct, n_no_detection, per_class = _score_batch(
-                batch_paths, predictions, batch_n_boxes, gt_labels_map,
-                n_total, n_correct, n_no_detection, per_class, log.info,
-                throughput_only=args.throughput_only,
-            )
+    n_total, n_correct, n_no_detection, per_class = _run_detector_loop(
+        args.detector, loader, models, device,
+        gt_labels_map, args.throughput_only, yolo_imgsz,
+    )
 
     elapsed = time.perf_counter() - t0
     throughput = n_total / elapsed if elapsed > 0 else 0.0

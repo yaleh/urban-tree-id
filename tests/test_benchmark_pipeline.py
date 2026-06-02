@@ -701,3 +701,205 @@ class TestRunTimedBench:
         assert n_total >= 0
         # n_total should only cover the measuring window
         assert elapsed <= 0.2 + 0.05  # allow 50ms overshoot
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _tensor_to_pil module-level extraction
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTensorToPil:
+    """_tensor_to_pil must be a module-level function (not a closure inside main)."""
+
+    def test_is_module_level(self):
+        import benchmark_pipeline as bm
+        assert hasattr(bm, "_tensor_to_pil"), "_tensor_to_pil must be at module level"
+        assert callable(bm._tensor_to_pil)
+
+    def test_converts_chw_uint8_to_pil(self):
+        from benchmark_pipeline import _tensor_to_pil
+        t = torch.zeros(3, 100, 150, dtype=torch.uint8)
+        img = _tensor_to_pil(t)
+        assert isinstance(img, Image.Image)
+
+    def test_output_size_is_wh(self):
+        """PIL size is (W, H) — opposite of tensor (C, H, W)."""
+        from benchmark_pipeline import _tensor_to_pil
+        t = torch.zeros(3, 100, 150, dtype=torch.uint8)
+        img = _tensor_to_pil(t)
+        assert img.size == (150, 100)
+
+    def test_pixel_values_preserved(self):
+        from benchmark_pipeline import _tensor_to_pil
+        t = torch.full((3, 50, 60), 128, dtype=torch.uint8)
+        img = _tensor_to_pil(t)
+        arr = np.array(img)
+        assert arr.shape == (50, 60, 3)
+        assert (arr == 128).all()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _run_detector_loop — extracted detector+embed+score loop
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _make_fake_loader(n_batches: int = 2, batch_size: int = 2):
+    """Returns a list of (tensor_list, path_list) tuples mimicking a DataLoader."""
+    batches = []
+    for i in range(n_batches):
+        tensors = [torch.zeros(3, 64, 64, dtype=torch.uint8) for _ in range(batch_size)]
+        paths   = [f"/img/b{i}_i{j}.jpg" for j in range(batch_size)]
+        batches.append((tensors, paths))
+    return batches
+
+
+def _make_models_for_loop(detector: str = "yolo"):
+    """Build a minimal models dict with mocked sub-objects."""
+    dinov2 = MagicMock()
+    dinov2.forward_features.return_value = {"x_norm_clstoken": torch.zeros(2, 384)}
+    models = {"device": "cpu", "dinov2": dinov2, "clf": MagicMock()}
+    if detector == "gdino":
+        models["gdino_proc"]  = MagicMock()
+        models["gdino_model"] = MagicMock()
+    elif detector == "yolo":
+        models["yolo_model"] = MagicMock()
+    elif detector == "rf-detr":
+        rfdetr = MagicMock()
+        rfdetr.preprocess_cpu.return_value = ([torch.zeros(3, 64, 64)], [(64, 64)])
+        rfdetr.forward_from_cpu_tensors.return_value = [[], []]
+        models["rfdetr_detector"] = rfdetr
+    return models
+
+
+def _gt_map(loader):
+    return {p: "Oak" for _, paths in loader for p in paths}
+
+
+class TestRunDetectorLoop:
+    """_run_detector_loop(detector, loader, models, device, gt_map, throughput_only, yolo_imgsz)
+    must run all batches and return (n_total, n_correct, n_no_detection, per_class)."""
+
+    def test_exists(self):
+        from benchmark_pipeline import _run_detector_loop
+        assert callable(_run_detector_loop)
+
+    def test_returns_four_tuple(self):
+        from benchmark_pipeline import _run_detector_loop
+        loader = _make_fake_loader()
+        models = _make_models_for_loop("yolo")
+        gt = _gt_map(loader)
+        with patch("benchmark_pipeline.detect_yolo_batch", return_value=[[], []]), \
+             patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
+            result = _run_detector_loop("yolo", loader, models, "cpu", gt, False, 1280)
+        assert isinstance(result, tuple) and len(result) == 4
+
+    def test_n_total_equals_all_images(self):
+        from benchmark_pipeline import _run_detector_loop
+        n_batches, batch_size = 3, 2
+        loader = _make_fake_loader(n_batches, batch_size)
+        models = _make_models_for_loop("yolo")
+        gt = _gt_map(loader)
+        with patch("benchmark_pipeline.detect_yolo_batch", return_value=[[], []]), \
+             patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
+            n_total, _, _, _ = _run_detector_loop(
+                "yolo", loader, models, "cpu", gt, False, 1280)
+        assert n_total == n_batches * batch_size
+
+    def test_n_correct_counts_matching_predictions(self):
+        from benchmark_pipeline import _run_detector_loop
+        loader = _make_fake_loader(n_batches=1, batch_size=2)
+        models = _make_models_for_loop("yolo")
+        # Both GT = Oak; predictions: Oak correct, Elm wrong
+        gt = {"/img/b0_i0.jpg": "Oak", "/img/b0_i1.jpg": "Oak"}
+        with patch("benchmark_pipeline.detect_yolo_batch",
+                   return_value=[[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0]]), \
+             patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Elm", 0.7)]):
+            n_total, n_correct, _, _ = _run_detector_loop(
+                "yolo", loader, models, "cpu", gt, False, 1280)
+        assert n_total == 2
+        assert n_correct == 1
+
+    def test_throughput_only_skips_scoring(self):
+        from benchmark_pipeline import _run_detector_loop
+        loader = _make_fake_loader()
+        models = _make_models_for_loop("yolo")
+        # Pass empty gt — throughput_only must not read it
+        with patch("benchmark_pipeline.detect_yolo_batch", return_value=[[], []]), \
+             patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
+            n_total, n_correct, _, _ = _run_detector_loop(
+                "yolo", loader, models, "cpu", {}, True, 1280)
+        assert n_correct == 0
+
+    def test_yolo_calls_detect_yolo_batch_once_per_batch(self):
+        from benchmark_pipeline import _run_detector_loop
+        n_batches = 3
+        loader = _make_fake_loader(n_batches=n_batches)
+        models = _make_models_for_loop("yolo")
+        gt = _gt_map(loader)
+        mock_detect = MagicMock(return_value=[[], []])
+        with patch("benchmark_pipeline.detect_yolo_batch", mock_detect), \
+             patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
+            _run_detector_loop("yolo", loader, models, "cpu", gt, False, 1280)
+        assert mock_detect.call_count == n_batches
+
+    def test_gdino_calls_gdino_forward_batch_once_per_batch(self):
+        from benchmark_pipeline import _run_detector_loop
+        n_batches = 2
+        loader = _make_fake_loader(n_batches=n_batches)
+        models = _make_models_for_loop("gdino")
+        gt = _gt_map(loader)
+        mock_forward    = MagicMock(return_value=[[], []])
+        mock_preprocess = MagicMock(return_value={"input_ids": torch.zeros(2, 5)})
+        with patch("benchmark_pipeline.gdino_forward_batch", mock_forward), \
+             patch("benchmark_pipeline.gdino_preprocess_batch", mock_preprocess), \
+             patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
+            _run_detector_loop("gdino", loader, models, "cpu", gt, False, 1280)
+        assert mock_forward.call_count == n_batches
+
+    def test_rfdetr_calls_forward_from_cpu_tensors_once_per_batch(self):
+        from benchmark_pipeline import _run_detector_loop
+        n_batches = 2
+        loader = _make_fake_loader(n_batches=n_batches)
+        models = _make_models_for_loop("rf-detr")
+        gt = _gt_map(loader)
+        rfdetr = models["rfdetr_detector"]
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
+            _run_detector_loop("rf-detr", loader, models, "cpu", gt, False, 1280)
+        assert rfdetr.forward_from_cpu_tensors.call_count == n_batches
+
+    def test_per_class_accumulated(self):
+        from benchmark_pipeline import _run_detector_loop
+        loader = _make_fake_loader(n_batches=1, batch_size=2)
+        models = _make_models_for_loop("yolo")
+        gt = {"/img/b0_i0.jpg": "Oak", "/img/b0_i1.jpg": "Elm"}
+        with patch("benchmark_pipeline.detect_yolo_batch",
+                   return_value=[[1, 2, 3, 4], [1, 2, 3, 4]]), \
+             patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(2, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9), ("Oak", 0.8)]):
+            _, _, _, per_class = _run_detector_loop(
+                "yolo", loader, models, "cpu", gt, False, 1280)
+        assert per_class["Oak"]["total"]   == 1
+        assert per_class["Oak"]["correct"] == 1
+        assert per_class["Elm"]["total"]   == 1
+        assert per_class["Elm"]["correct"] == 0

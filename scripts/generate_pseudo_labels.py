@@ -13,7 +13,6 @@ import logging
 import shutil
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -22,29 +21,13 @@ from torchvision.ops import nms
 from tqdm import tqdm
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
+from gdino_utils import gdino_preprocess  # noqa: E402  (scripts/ on sys.path)
+
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
-GDINO_MODEL   = "IDEA-Research/grounding-dino-tiny"
-SHORTEST_EDGE = 800
-LONGEST_EDGE  = 1333
-GDINO_MEAN    = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-GDINO_STD     = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-TEXT_PROMPT   = "tree."
-
-
-# ── Preprocessing (reused from 03_extract_embeddings.py) ──────────────────────
-
-def gdino_preprocess(pil_img):
-    w, h = pil_img.size
-    scale = SHORTEST_EDGE / min(h, w)
-    new_h, new_w = int(round(h * scale)), int(round(w * scale))
-    if max(new_h, new_w) > LONGEST_EDGE:
-        scale = LONGEST_EDGE / max(new_h, new_w)
-        new_h, new_w = int(round(new_h * scale)), int(round(new_w * scale))
-    resized = pil_img.resize((new_w, new_h), Image.BILINEAR)
-    t = torch.as_tensor(np.array(resized), dtype=torch.float32).permute(2, 0, 1) / 255.0
-    return (t - GDINO_MEAN) / GDINO_STD
+GDINO_MODEL = "IDEA-Research/grounding-dino-tiny"
+TEXT_PROMPT = "tree."
 
 
 def collate_fn(batch):

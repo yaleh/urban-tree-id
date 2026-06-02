@@ -29,6 +29,7 @@ import sys
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+from gdino_utils import gdino_preprocess  # noqa: E402  (scripts/ on sys.path)
 
 # ── Constants (mirrored from 03_extract_embeddings.py) ────────────────────────
 
@@ -41,8 +42,6 @@ GDINO_IOU_THR   = 0.45   # NMS IoU threshold
 
 DINOV2_MODEL  = "dinov2_vits14"
 TARGET_SIZE   = 448
-SHORTEST_EDGE = 800
-LONGEST_EDGE  = 1333
 
 
 # ── Preprocessing (copied verbatim from 03_extract_embeddings.py) ─────────────
@@ -75,26 +74,6 @@ def make_crop(pil_img, box_xyxy, pad_frac=0.05):
     canvas = Image.new("RGB", (TARGET_SIZE, TARGET_SIZE), (255, 255, 255))
     canvas.paste(scaled, ((TARGET_SIZE - new_w) // 2, (TARGET_SIZE - new_h) // 2))
     return canvas
-
-
-def gdino_preprocess(pil_img):
-    """Resize + normalise a PIL image for GDino (matches 03_extract_embeddings.py)."""
-    import numpy as np
-    import torch
-    from PIL import Image
-
-    GDINO_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    GDINO_STD  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-
-    w, h = pil_img.size
-    scale = SHORTEST_EDGE / min(h, w)
-    new_h, new_w = int(round(h * scale)), int(round(w * scale))
-    if max(new_h, new_w) > LONGEST_EDGE:
-        scale = LONGEST_EDGE / max(new_h, new_w)
-        new_h, new_w = int(round(new_h * scale)), int(round(new_w * scale))
-    resized = pil_img.resize((new_w, new_h), Image.BILINEAR)
-    t = torch.as_tensor(np.array(resized), dtype=torch.float32).permute(2, 0, 1) / 255.0
-    return (t - GDINO_MEAN) / GDINO_STD
 
 
 # ── Detectors ─────────────────────────────────────────────────────────────────
