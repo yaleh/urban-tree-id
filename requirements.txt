@@ -1,0 +1,28 @@
+# PyTorch (CUDA 11.8)
+torch==2.0.0+cu118
+torchvision==0.15.0+cu118
+
+# Detection & Classification
+ultralytics==8.4.56
+rfdetr==1.1.0
+transformers==4.44.0
+
+# Vision & ML
+Pillow
+opencv-python
+numpy
+scikit-learn==1.5.0
+joblib
+
+# Utilities
+tqdm
+pyyaml
+matplotlib
+
+# Data / upload
+kaggle
+google-api-python-client
+google-auth
+
+# Dev
+pytest
