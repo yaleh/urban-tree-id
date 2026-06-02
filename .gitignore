@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large model weights (symlinked or downloaded separately)
+*.pth
+*.pt
+!runs/**/weights/best.pt
+
+# Embeddings (large .npz files)
+gdino_dinov2_svm/embeddings/
+
+# Logs and runtime output
+logs/
+output/
+*.lock
+
+# Pytest
+.pytest_cache/

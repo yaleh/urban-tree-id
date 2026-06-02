@@ -1,0 +1,13 @@
+{
+  "detector": "gdino",
+  "batch_size": 8,
+  "workers": 4,
+  "n_total": 200,
+  "n_correct": 0,
+  "top1_accuracy": 0.0,
+  "n_no_detection": 0,
+  "n_no_ann": 0,
+  "elapsed_s": 55.56,
+  "throughput_img_per_s": 3.6,
+  "per_class": {}
+}

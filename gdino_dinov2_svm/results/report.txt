@@ -1,0 +1,65 @@
+=== GDino bbox crop → DINOv2 ViT-S/14 → RBF-SVM ===
+
+Val  acc=0.9722  weighted-F1=0.9721  macro-F1=0.9729
+Test acc=0.9534  weighted-F1=0.9534  macro-F1=0.9527
+
+--- Val Classification Report ---
+                                   precision    recall  f1-score   support
+
+                    acer_palmatum       1.00      0.93      0.97        15
+                   cedrus_deodara       1.00      1.00      1.00        15
+                  celtis_sinensis       0.95      1.00      0.97        19
+ cinnamomum_camphora_(linn)_presl       0.91      1.00      0.95        20
+            elaeocarpus_decipiens       0.95      1.00      0.98        20
+                 flowering_cherry       1.00      1.00      1.00        13
+                    ginkgo_biloba       1.00      0.96      0.98        23
+          koelreuteria_paniculata       0.95      0.95      0.95        19
+            liquidambar_formosana       0.90      1.00      0.95        19
+            liriodendron_chinense       0.95      0.95      0.95        21
+           magnolia_grandiflora_l       1.00      0.94      0.97        17
+          magnolia_liliflora_desr       1.00      0.89      0.94        18
+               michelia_chapensis       1.00      1.00      1.00        18
+               osmanthus_fragrans       0.95      1.00      0.98        21
+            photinia_serratifolia       1.00      0.93      0.96        14
+                         platanus       0.95      0.95      0.95        22
+prunus_cerasifera_f._atropurpurea       1.00      0.92      0.96        12
+                 salix_babylonica       1.00      1.00      1.00        16
+               sapindus_saponaria       1.00      1.00      1.00        21
+          styphnolobium_japonicum       0.95      1.00      0.97        19
+                triadica_sebifera       1.00      0.94      0.97        18
+                  zelkova_serrata       1.00      1.00      1.00        15
+
+                         accuracy                           0.97       395
+                        macro avg       0.98      0.97      0.97       395
+                     weighted avg       0.97      0.97      0.97       395
+
+--- Test Classification Report ---
+                                   precision    recall  f1-score   support
+
+                    acer_palmatum       0.92      0.86      0.89        14
+                   cedrus_deodara       1.00      1.00      1.00        14
+                  celtis_sinensis       0.94      0.89      0.91        18
+ cinnamomum_camphora_(linn)_presl       0.87      1.00      0.93        20
+            elaeocarpus_decipiens       0.94      0.84      0.89        19
+                 flowering_cherry       0.76      1.00      0.87        13
+                    ginkgo_biloba       1.00      1.00      1.00        22
+          koelreuteria_paniculata       1.00      0.95      0.97        19
+            liquidambar_formosana       0.95      1.00      0.97        19
+            liriodendron_chinense       0.95      0.90      0.93        21
+           magnolia_grandiflora_l       1.00      1.00      1.00        17
+          magnolia_liliflora_desr       0.94      0.83      0.88        18
+               michelia_chapensis       0.95      1.00      0.97        18
+               osmanthus_fragrans       1.00      1.00      1.00        21
+            photinia_serratifolia       1.00      1.00      1.00        14
+                         platanus       1.00      0.86      0.93        22
+prunus_cerasifera_f._atropurpurea       0.92      1.00      0.96        12
+                 salix_babylonica       1.00      1.00      1.00        16
+               sapindus_saponaria       1.00      1.00      1.00        20
+          styphnolobium_japonicum       1.00      0.94      0.97        18
+                triadica_sebifera       0.85      1.00      0.92        17
+                  zelkova_serrata       1.00      0.93      0.96        14
+
+                         accuracy                           0.95       386
+                        macro avg       0.95      0.96      0.95       386
+                     weighted avg       0.96      0.95      0.95       386
+

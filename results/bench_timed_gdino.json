@@ -1,0 +1,13 @@
+{
+  "mode": "timed_bench",
+  "detector": "gdino",
+  "batch_size": 8,
+  "n_preloaded": 200,
+  "n_batches": 25,
+  "warmup_s": 5.0,
+  "duration_s": 30.0,
+  "n_measured": 128,
+  "n_warmup": 24,
+  "elapsed_s": 30.3,
+  "throughput_img_per_s": 4.23
+}

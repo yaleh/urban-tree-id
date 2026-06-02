@@ -1,0 +1,13 @@
+{
+  "detector": "yolo",
+  "batch_size": 64,
+  "workers": 4,
+  "n_total": 200,
+  "n_correct": 0,
+  "top1_accuracy": 0.0,
+  "n_no_detection": 0,
+  "n_no_ann": 0,
+  "elapsed_s": 15.78,
+  "throughput_img_per_s": 12.67,
+  "per_class": {}
+}

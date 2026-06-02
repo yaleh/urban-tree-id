@@ -1,0 +1,13 @@
+{
+  "detector": "rf-detr",
+  "batch_size": 16,
+  "workers": 4,
+  "n_total": 7724,
+  "n_correct": 0,
+  "top1_accuracy": 0.0,
+  "n_no_detection": 0,
+  "n_no_ann": 0,
+  "elapsed_s": 689.2,
+  "throughput_img_per_s": 11.21,
+  "per_class": {}
+}

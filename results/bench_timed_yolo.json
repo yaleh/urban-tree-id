@@ -1,0 +1,13 @@
+{
+  "mode": "timed_bench",
+  "detector": "yolo",
+  "batch_size": 64,
+  "n_preloaded": 192,
+  "n_batches": 3,
+  "warmup_s": 5.0,
+  "duration_s": 30.0,
+  "n_measured": 832,
+  "n_warmup": 128,
+  "elapsed_s": 28.84,
+  "throughput_img_per_s": 28.85
+}

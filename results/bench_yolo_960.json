@@ -1,0 +1,124 @@
+{
+  "detector": "yolo",
+  "batch_size": 16,
+  "workers": 4,
+  "n_total": 386,
+  "n_correct": 291,
+  "top1_accuracy": 0.7539,
+  "n_no_detection": 111,
+  "n_no_ann": 0,
+  "elapsed_s": 35.78,
+  "throughput_img_per_s": 10.79,
+  "per_class": {
+    "acer_palmatum": {
+      "total": 14,
+      "correct": 7,
+      "accuracy": 0.5
+    },
+    "cedrus_deodara": {
+      "total": 14,
+      "correct": 14,
+      "accuracy": 1.0
+    },
+    "celtis_sinensis": {
+      "total": 18,
+      "correct": 10,
+      "accuracy": 0.5556
+    },
+    "cinnamomum_camphora_(linn)_presl": {
+      "total": 20,
+      "correct": 18,
+      "accuracy": 0.9
+    },
+    "elaeocarpus_decipiens": {
+      "total": 19,
+      "correct": 17,
+      "accuracy": 0.8947
+    },
+    "flowering_cherry": {
+      "total": 13,
+      "correct": 10,
+      "accuracy": 0.7692
+    },
+    "ginkgo_biloba": {
+      "total": 22,
+      "correct": 18,
+      "accuracy": 0.8182
+    },
+    "koelreuteria_paniculata": {
+      "total": 19,
+      "correct": 14,
+      "accuracy": 0.7368
+    },
+    "liquidambar_formosana": {
+      "total": 19,
+      "correct": 14,
+      "accuracy": 0.7368
+    },
+    "liriodendron_chinense": {
+      "total": 21,
+      "correct": 12,
+      "accuracy": 0.5714
+    },
+    "magnolia_grandiflora_l": {
+      "total": 17,
+      "correct": 16,
+      "accuracy": 0.9412
+    },
+    "magnolia_liliflora_desr": {
+      "total": 18,
+      "correct": 14,
+      "accuracy": 0.7778
+    },
+    "michelia_chapensis": {
+      "total": 18,
+      "correct": 8,
+      "accuracy": 0.4444
+    },
+    "osmanthus_fragrans": {
+      "total": 21,
+      "correct": 18,
+      "accuracy": 0.8571
+    },
+    "photinia_serratifolia": {
+      "total": 14,
+      "correct": 14,
+      "accuracy": 1.0
+    },
+    "platanus": {
+      "total": 22,
+      "correct": 14,
+      "accuracy": 0.6364
+    },
+    "prunus_cerasifera_f._atropurpurea": {
+      "total": 12,
+      "correct": 8,
+      "accuracy": 0.6667
+    },
+    "salix_babylonica": {
+      "total": 16,
+      "correct": 16,
+      "accuracy": 1.0
+    },
+    "sapindus_saponaria": {
+      "total": 20,
+      "correct": 14,
+      "accuracy": 0.7
+    },
+    "styphnolobium_japonicum": {
+      "total": 18,
+      "correct": 14,
+      "accuracy": 0.7778
+    },
+    "triadica_sebifera": {
+      "total": 17,
+      "correct": 10,
+      "accuracy": 0.5882
+    },
+    "zelkova_serrata": {
+      "total": 14,
+      "correct": 11,
+      "accuracy": 0.7857
+    }
+  }
+}
