@@ -2,7 +2,7 @@
 
 **对应 Proposal**：`docs/proposals/proposal-scripts-dedup-refactor.md`  
 **日期**：2026-06-02  
-**状态**：待执行
+**状态**：已完成（2026-06-02）
 
 ---
 
