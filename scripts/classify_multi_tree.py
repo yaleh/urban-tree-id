@@ -30,6 +30,7 @@ import torchvision.transforms as T
 from PIL import Image, ImageDraw, ImageFont
 from sklearn import svm
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+from gdino_utils import gdino_preprocess, gdino_preprocess_with_size
 
 GDINO_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 SHORTEST_EDGE  = 800
@@ -55,20 +56,6 @@ COLORS = [
     (220, 100,   0),
     (  0, 140,  80),
 ]
-
-
-# ── GDino preprocessing ────────────────────────────────────────────────────────
-
-def gdino_preprocess(pil_img):
-    w, h = pil_img.size
-    scale = SHORTEST_EDGE / min(h, w)
-    new_h, new_w = int(round(h * scale)), int(round(w * scale))
-    if max(new_h, new_w) > LONGEST_EDGE:
-        scale = LONGEST_EDGE / max(new_h, new_w)
-        new_h, new_w = int(round(new_h * scale)), int(round(new_w * scale))
-    resized = pil_img.resize((new_w, new_h), Image.BILINEAR)
-    t = torch.as_tensor(np.array(resized), dtype=torch.float32).permute(2, 0, 1) / 255.0
-    return (t - GDINO_MEAN) / GDINO_STD, new_h, new_w
 
 
 # ── Crop utility ───────────────────────────────────────────────────────────────
@@ -198,7 +185,7 @@ def detect_and_classify(img_path, gdino_model, gdino_processor,
     W, H = pil.size
 
     # GDino forward
-    tensor, prep_h, prep_w = gdino_preprocess(pil)
+    tensor, prep_h, prep_w = gdino_preprocess_with_size(pil)
     pixel_values = tensor.unsqueeze(0)                          # (1, 3, H, W)
     pixel_mask   = torch.ones(1, prep_h, prep_w, dtype=torch.long)
     # Pad to square for single-image batch (no-op if already same size)

@@ -104,3 +104,52 @@ class TestGdinoUtils:
     def test_longest_edge_is_1333(self):
         from gdino_utils import LONGEST_EDGE
         assert LONGEST_EDGE == 1333
+
+
+class TestGdinoPreprocessWithSize:
+    """gdino_preprocess_with_size must return (tensor, new_h, new_w)."""
+
+    def test_returns_three_tuple(self):
+        from gdino_utils import gdino_preprocess_with_size
+        result = gdino_preprocess_with_size(_make_pil(640, 480))
+        assert len(result) == 3
+
+    def test_first_element_is_tensor(self):
+        from gdino_utils import gdino_preprocess_with_size
+        tensor, new_h, new_w = gdino_preprocess_with_size(_make_pil(640, 480))
+        assert isinstance(tensor, torch.Tensor)
+
+    def test_second_and_third_are_positive_ints(self):
+        from gdino_utils import gdino_preprocess_with_size
+        _, new_h, new_w = gdino_preprocess_with_size(_make_pil(640, 480))
+        assert isinstance(new_h, int) and new_h > 0
+        assert isinstance(new_w, int) and new_w > 0
+
+    def test_tensor_matches_gdino_preprocess(self):
+        """Tensor from gdino_preprocess_with_size must equal gdino_preprocess output."""
+        from gdino_utils import gdino_preprocess, gdino_preprocess_with_size
+        pil = _make_pil(800, 600)
+        tensor_ref = gdino_preprocess(pil)
+        tensor_out, _, _ = gdino_preprocess_with_size(pil)
+        assert torch.allclose(tensor_out, tensor_ref, atol=1e-6)
+
+    def test_sizes_match_tensor_spatial_dims(self):
+        """Returned new_h, new_w must match the spatial dimensions of the tensor."""
+        from gdino_utils import gdino_preprocess_with_size
+        tensor, new_h, new_w = gdino_preprocess_with_size(_make_pil(640, 480))
+        assert tensor.shape[1] == new_h
+        assert tensor.shape[2] == new_w
+
+    def test_wide_image(self):
+        """Width > height: new_w > new_h after preprocessing."""
+        from gdino_utils import gdino_preprocess_with_size
+        # 1200×600 → width is longer
+        tensor, new_h, new_w = gdino_preprocess_with_size(_make_pil(1200, 600))
+        assert new_w > new_h
+
+    def test_tall_image(self):
+        """Height > width: new_h > new_w after preprocessing."""
+        from gdino_utils import gdino_preprocess_with_size
+        # 600×1200 → height is longer
+        tensor, new_h, new_w = gdino_preprocess_with_size(_make_pil(600, 1200))
+        assert new_h > new_w
