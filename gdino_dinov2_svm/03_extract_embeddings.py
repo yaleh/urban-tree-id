@@ -32,6 +32,13 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 import torchvision.transforms as T
+import sys
+from pathlib import Path
+
+_scripts = Path(__file__).parent.parent / "scripts"
+if str(_scripts) not in sys.path:
+    sys.path.insert(0, str(_scripts))
+from gdino_utils import gdino_preprocess  # noqa: E402
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -53,18 +60,6 @@ DINOV2_TRANSFORM = T.Compose([
 
 
 # ── Preprocessing ─────────────────────────────────────────────────────────────
-
-def gdino_preprocess(pil_img):
-    w, h = pil_img.size
-    scale = SHORTEST_EDGE / min(h, w)
-    new_h, new_w = int(round(h * scale)), int(round(w * scale))
-    if max(new_h, new_w) > LONGEST_EDGE:
-        scale = LONGEST_EDGE / max(new_h, new_w)
-        new_h, new_w = int(round(new_h * scale)), int(round(new_w * scale))
-    resized = pil_img.resize((new_w, new_h), Image.BILINEAR)
-    t = torch.as_tensor(np.array(resized), dtype=torch.float32).permute(2, 0, 1) / 255.0
-    return (t - GDINO_MEAN) / GDINO_STD
-
 
 def make_crop(pil_img, box_xyxy, pad_frac=0.05):
     W, H = pil_img.size

@@ -43,47 +43,17 @@ log = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
-# Lazy references populated the first time _ensure_pp_imports() is called.
-# Tests can patch these names directly on this module.
-gdino_forward_batch    = None
-gdino_preprocess_batch = None
-detect_yolo_batch      = None
-make_crops_gpu_batch   = None
-predict_species_batch  = None
+_scripts = Path(__file__).parent
+if str(_scripts) not in sys.path:
+    sys.path.insert(0, str(_scripts))
 
-
-def _ensure_pp_imports():
-    """Import predict_pipeline symbols once and bind them to module-level names.
-
-    Only fills slots that are still None; slots already set by tests (via patch)
-    are left untouched so mock patches are not overwritten.
-    """
-    global gdino_forward_batch, gdino_preprocess_batch, detect_yolo_batch, \
-           make_crops_gpu_batch, predict_species_batch
-    _all_set = (
-        gdino_forward_batch    is not None and
-        gdino_preprocess_batch is not None and
-        detect_yolo_batch      is not None and
-        make_crops_gpu_batch   is not None and
-        predict_species_batch  is not None
-    )
-    if _all_set:
-        return
-    _scripts = Path(__file__).parent
-    if str(_scripts) not in sys.path:
-        sys.path.insert(0, str(_scripts))
-    from predict_pipeline import (
-        gdino_forward_batch    as _gfb,
-        gdino_preprocess_batch as _gpb,
-        detect_yolo_batch      as _dyb,
-        make_crops_gpu_batch   as _mcgb,
-        predict_species_batch  as _psb,
-    )
-    if gdino_forward_batch    is None: gdino_forward_batch    = _gfb
-    if gdino_preprocess_batch is None: gdino_preprocess_batch = _gpb
-    if detect_yolo_batch      is None: detect_yolo_batch      = _dyb
-    if make_crops_gpu_batch   is None: make_crops_gpu_batch   = _mcgb
-    if predict_species_batch  is None: predict_species_batch  = _psb
+from predict_pipeline import (  # noqa: E402
+    gdino_forward_batch,
+    gdino_preprocess_batch,
+    detect_yolo_batch,
+    make_crops_gpu_batch,
+    predict_species_batch,
+)
 
 # Per-detector batch size defaults tuned to ~12 GB VRAM
 _DEFAULT_BATCH = {"gdino": 8, "yolo": 64, "rf-detr": 64}
@@ -242,8 +212,6 @@ def _run_detector_loop(
     import torch
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor
-
-    _ensure_pp_imports()
 
     n_total        = 0
     n_correct      = 0
@@ -446,12 +414,6 @@ def _preload_batches(
     import numpy as np
     import torch
     from PIL import Image as PILImage
-    _ensure_pp_imports()
-
-    _scripts = Path(__file__).parent
-    if str(_scripts) not in sys.path:
-        sys.path.insert(0, str(_scripts))
-    from predict_pipeline import gdino_preprocess_batch
 
     images = _adjust_image_count(images, batch_size)
 
@@ -508,7 +470,6 @@ def _run_timed_bench(
     """
     import time
     import torch
-    _ensure_pp_imports()
 
     n_batches  = len(preloaded)
     t0         = time.perf_counter()
