@@ -10,9 +10,8 @@ import yaml
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-from generate_pseudo_labels import (
-    filter_boxes, is_too_dark, write_label_file, xyxy_to_yolo,
-)
+from generate_pseudo_labels import filter_boxes, is_too_dark
+from yolo_io import xyxy_to_yolo, write_yolo_labels as write_label_file
 from split_dataset import split_dataset, write_data_yaml, VIDEO_SPLITS
 
 
