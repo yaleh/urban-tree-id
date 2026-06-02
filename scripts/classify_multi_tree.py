@@ -31,7 +31,8 @@ from PIL import Image, ImageDraw, ImageFont
 from sklearn import svm
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from gdino_utils import gdino_preprocess, gdino_preprocess_with_size
-from image_utils import make_crop_norm as make_crop, DEFAULT_CROP_SIZE
+from image_utils import make_crop_norm as make_crop, make_crop_xyxy, DEFAULT_CROP_SIZE
+from predict_pipeline import detect_gdino, detect_yolo
 
 GDINO_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 SHORTEST_EDGE  = 800
@@ -156,109 +157,61 @@ def yolo_boxes_from_results(result):
 
 # ── Detection + classification ─────────────────────────────────────────────────
 
-def detect_and_classify(img_path, gdino_model, gdino_processor,
-                        dinov2, clf, device, text, score_thr):
-    pil = Image.open(img_path).convert("RGB")
-    W, H = pil.size
+def classify_detections(pil_img, boxes_xyxy, dinov2, clf, device):
+    """Accept xyxy pixel-coordinate boxes, crop + embed + classify each one.
 
-    # GDino forward
-    tensor, prep_h, prep_w = gdino_preprocess_with_size(pil)
-    pixel_values = tensor.unsqueeze(0)                          # (1, 3, H, W)
-    pixel_mask   = torch.ones(1, prep_h, prep_w, dtype=torch.long)
-    # Pad to square for single-image batch (no-op if already same size)
-    max_H, max_W = prep_h, prep_w
-
-    text_enc = gdino_processor.tokenizer(text, return_tensors="pt", padding=True)
-    input_ids      = text_enc["input_ids"].to(device)
-    attn_mask      = text_enc["attention_mask"].to(device)
-    token_type_ids = text_enc.get("token_type_ids",
-                                  torch.zeros_like(text_enc["input_ids"])).to(device)
-
-    with torch.no_grad():
-        out = gdino_model(
-            pixel_values=pixel_values.to(device),
-            pixel_mask=pixel_mask.to(device),
-            input_ids=input_ids,
-            attention_mask=attn_mask,
-            token_type_ids=token_type_ids,
-        )
-
-    scores     = out.logits[0].sigmoid().max(dim=-1).values.cpu()  # (900,)
-    pred_boxes = out.pred_boxes[0].cpu()                           # (900, 4) cx,cy,w,h norm
-
-    # Collect all detections above threshold
-    above = (scores >= score_thr).nonzero(as_tuple=True)[0]
-    if above.numel() == 0:
+    Returns a list of result dicts with keys: box_norm, species, svm_conf.
+    box_norm contains the normalised [x0, y0, x1, y1] coordinates derived
+    by dividing the pixel coordinates by the image width/height.
+    """
+    if not boxes_xyxy:
         return []
 
-    # Convert to xyxy normalized in original image space
-    # (proportional resize → normalized coords are invariant)
-    detections_raw = []
-    for q in above.tolist():
-        s = scores[q].item()
-        cx, cy, bw, bh = pred_boxes[q].tolist()
-        x0_n = max(0.0, cx - bw / 2)
-        y0_n = max(0.0, cy - bh / 2)
-        x1_n = min(1.0, cx + bw / 2)
-        y1_n = min(1.0, cy + bh / 2)
-        if x1_n - x0_n < 0.005 or y1_n - y0_n < 0.005:
-            continue
-        area = (x1_n - x0_n) * (y1_n - y0_n)
-        detections_raw.append((s, area, (x0_n, y0_n, x1_n, y1_n)))
-
-    # NMS: suppress boxes with IoU > 0.5 (keep higher-score box)
-    detections_raw.sort(key=lambda x: -x[0])
-    kept = []
-    for det in detections_raw:
-        box = det[2]
-        suppress = False
-        for k in kept:
-            kbox = k[2]
-            ix0 = max(box[0], kbox[0]); iy0 = max(box[1], kbox[1])
-            ix1 = min(box[2], kbox[2]); iy1 = min(box[3], kbox[3])
-            inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
-            union = ((box[2]-box[0])*(box[3]-box[1]) +
-                     (kbox[2]-kbox[0])*(kbox[3]-kbox[1]) - inter)
-            if union > 0 and inter / union > 0.5:
-                suppress = True
-                break
-        if not suppress:
-            kept.append(det)
-
-    # Classify each kept box
-    results = []
+    w, h = pil_img.size
     crops = []
     boxes_norm = []
-    gdino_scores = []
-    for s, area, box_norm in kept:
-        crop = make_crop(pil, box_norm)
+    for box in boxes_xyxy:
+        x0, y0, x1, y1 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+        crop = make_crop_xyxy(pil_img, (x0, y0, x1, y1))
         crops.append(DINOV2_TRANSFORM(crop))
-        boxes_norm.append(box_norm)
-        gdino_scores.append(s)
-
-    if not crops:
-        return []
+        boxes_norm.append([x0 / w, y0 / h, x1 / w, y1 / h])
 
     batch = torch.stack(crops).to(device)
     with torch.no_grad():
         feats = dinov2.forward_features(batch)["x_norm_clstoken"].cpu().numpy()
 
     species_preds = clf.predict(feats)
-    # Use decision_function for per-class confidence (softmax of distances)
-    dec = clf.decision_function(feats)                   # (N, n_classes)
+    dec = clf.decision_function(feats)                    # (N, n_classes)
     exp_dec = np.exp(dec - dec.max(axis=1, keepdims=True))
     svm_confs = exp_dec / exp_dec.sum(axis=1, keepdims=True)
     svm_confs_max = svm_confs.max(axis=1)
 
-    for box_norm, gdino_score, species, conf in zip(
-            boxes_norm, gdino_scores, species_preds, svm_confs_max):
+    results = []
+    for box_norm, species, conf in zip(boxes_norm, species_preds, svm_confs_max):
         results.append({
-            "box_norm":  box_norm,
-            "species":   species,
-            "det_score": gdino_score,
-            "svm_conf":  float(conf),
+            "box_norm": box_norm,
+            "species":  species,
+            "svm_conf": float(conf),
         })
+    return results
 
+
+def detect_and_classify(img_path, gdino_model, gdino_processor,
+                        dinov2, clf, device, text, score_thr):
+    pil = Image.open(img_path).convert("RGB")
+
+    # Delegate detection to predict_pipeline.detect_gdino (xyxy pixel coords,
+    # NMS IoU 0.45, score_thr 0.35 — matches pseudo-label generation defaults)
+    boxes_xyxy = detect_gdino(pil, device, proc=gdino_processor, model=gdino_model)
+
+    results = []
+    for det in classify_detections(pil, boxes_xyxy, dinov2, clf, device):
+        results.append({
+            "box_norm":  det["box_norm"],
+            "species":   det["species"],
+            "det_score": 0.0,   # detect_gdino does not expose per-box scores post-NMS
+            "svm_conf":  det["svm_conf"],
+        })
     return results
 
 
@@ -269,38 +222,18 @@ def detect_and_classify_yolo(img_path, yolo_model, dinov2, clf, device, conf, im
     """
     pil = Image.open(img_path).convert("RGB")
 
-    results_list = yolo_model.predict(pil, conf=conf, imgsz=imgsz, verbose=False)
-    boxes = yolo_boxes_from_results(results_list[0])
-    if not boxes:
+    # detect_yolo returns xyxy pixel coordinates
+    boxes_xyxy = detect_yolo(pil, model=yolo_model, imgsz=imgsz)
+    if not boxes_xyxy:
         return []
 
-    crops = []
-    boxes_norm = []
-    det_scores = []
-    for det_score, box_norm in boxes:
-        crop = make_crop(pil, box_norm)
-        crops.append(DINOV2_TRANSFORM(crop))
-        boxes_norm.append(box_norm)
-        det_scores.append(det_score)
-
-    batch = torch.stack(crops).to(device)
-    with torch.no_grad():
-        feats = dinov2.forward_features(batch)["x_norm_clstoken"].cpu().numpy()
-
-    species_preds = clf.predict(feats)
-    dec = clf.decision_function(feats)
-    exp_dec = np.exp(dec - dec.max(axis=1, keepdims=True))
-    svm_confs = exp_dec / exp_dec.sum(axis=1, keepdims=True)
-    svm_confs_max = svm_confs.max(axis=1)
-
     output = []
-    for box_norm, det_score, species, svm_conf in zip(
-            boxes_norm, det_scores, species_preds, svm_confs_max):
+    for det in classify_detections(pil, boxes_xyxy, dinov2, clf, device):
         output.append({
-            "box_norm":  box_norm,
-            "species":   species,
-            "det_score": det_score,
-            "svm_conf":  float(svm_conf),
+            "box_norm":  det["box_norm"],
+            "species":   det["species"],
+            "det_score": 0.0,   # detect_yolo does not expose per-box scores
+            "svm_conf":  det["svm_conf"],
         })
     return output
 
