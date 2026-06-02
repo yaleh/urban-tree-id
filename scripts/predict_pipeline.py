@@ -29,6 +29,7 @@ import sys
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+from cli_common import add_detector_args  # noqa: E402
 from gdino_utils import gdino_preprocess  # noqa: E402  (scripts/ on sys.path)
 from image_utils import make_crop_xyxy as make_crop, DEFAULT_CROP_SIZE  # noqa: E402
 
@@ -500,26 +501,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Single-image tree species prediction pipeline."
     )
     parser.add_argument("--image",   required=True, help="Path to input image")
-    parser.add_argument(
-        "--detector",
-        default="gdino",
-        choices=["gdino", "yolo", "rf-detr"],
-        help="Detection backend (default: gdino)",
-    )
+    add_detector_args(parser)
     parser.add_argument(
         "--svm-model",
         required=True,
         help="Path to trained SVM model (.joblib)",
-    )
-    parser.add_argument(
-        "--yolo-checkpoint",
-        default=None,
-        help="YOLO weights file (required when --detector yolo)",
-    )
-    parser.add_argument(
-        "--rf-detr-checkpoint",
-        default=None,
-        help="RF-DETR checkpoint file (required when --detector rf-detr)",
     )
     return parser
 

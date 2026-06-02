@@ -124,8 +124,11 @@ def build_arg_parser():
     parser.add_argument("--score-thr",    type=float, default=0.3)
     parser.add_argument("--detector",     choices=["gdino", "yolo"], default="gdino",
                         help="Detection backend to use")
-    parser.add_argument("--yolo-model",   default="runs/detect/tree_yolo26s_halfres/weights/best.pt",
+    parser.add_argument("--yolo-checkpoint", dest="yolo_checkpoint",
+                        default="runs/detect/tree_yolo26s_halfres/weights/best.pt",
                         help="Path to YOLO .pt weights file")
+    parser.add_argument("--yolo-model", dest="yolo_checkpoint",
+                        help="[已废弃] 请使用 --yolo-checkpoint")
     parser.add_argument("--yolo-conf",    type=float, default=0.25,
                         help="YOLO confidence threshold")
     parser.add_argument("--yolo-imgsz",   type=int,   default=1280,
@@ -265,8 +268,8 @@ def main():
         gdino_model = gdino_model.to(device).eval()
     else:
         from ultralytics import YOLO
-        print(f"Loading YOLO ({args.yolo_model})...")
-        yolo_model = YOLO(args.yolo_model)
+        print(f"Loading YOLO ({args.yolo_checkpoint})...")
+        yolo_model = YOLO(args.yolo_checkpoint)
 
     print("Loading DINOv2 vits14...")
     dinov2 = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14").to(device).eval()

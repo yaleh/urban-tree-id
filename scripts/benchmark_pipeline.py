@@ -47,6 +47,7 @@ _scripts = Path(__file__).parent
 if str(_scripts) not in sys.path:
     sys.path.insert(0, str(_scripts))
 
+from cli_common import add_detector_args  # noqa: E402
 from predict_pipeline import (  # noqa: E402
     gdino_forward_batch,
     gdino_preprocess_batch,
@@ -302,12 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Batch benchmark for the predict_pipeline."
     )
-    parser.add_argument(
-        "--detector",
-        default="gdino",
-        choices=["gdino", "yolo", "rf-detr"],
-        help="Detection backend (default: gdino)",
-    )
+    add_detector_args(parser)
     parser.add_argument(
         "--test-dir",
         required=True,
@@ -332,16 +328,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default="benchmark_results.json",
         help="Output JSON report path (default: benchmark_results.json)",
-    )
-    parser.add_argument(
-        "--yolo-checkpoint",
-        default=None,
-        help="YOLO weights file (required when --detector yolo)",
-    )
-    parser.add_argument(
-        "--rf-detr-checkpoint",
-        default=None,
-        help="RF-DETR checkpoint (required when --detector rf-detr)",
     )
     parser.add_argument(
         "--batch-size",

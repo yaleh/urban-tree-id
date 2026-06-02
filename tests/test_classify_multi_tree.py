@@ -22,15 +22,21 @@ class TestArgParser:
         assert args.detector == "gdino"
         assert args.yolo_conf == 0.25
         assert args.yolo_imgsz == 1280
-        assert "tree_yolo26s_halfres" in args.yolo_model
+        assert "tree_yolo26s_halfres" in args.yolo_checkpoint
 
     def test_yolo_detector(self):
         args = build_arg_parser().parse_args(["--detector", "yolo"])
         assert args.detector == "yolo"
 
     def test_yolo_model_override(self):
+        # --yolo-model is a deprecated alias for --yolo-checkpoint
         args = build_arg_parser().parse_args(["--yolo-model", "custom.pt"])
-        assert args.yolo_model == "custom.pt"
+        assert args.yolo_checkpoint == "custom.pt"
+
+    def test_yolo_checkpoint_new_name(self):
+        # --yolo-checkpoint is the canonical new name
+        args = build_arg_parser().parse_args(["--yolo-checkpoint", "new.pt"])
+        assert args.yolo_checkpoint == "new.pt"
 
     def test_yolo_conf_override(self):
         args = build_arg_parser().parse_args(["--yolo-conf", "0.5"])

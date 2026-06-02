@@ -22,6 +22,7 @@ from torchvision.ops import nms
 from tqdm import tqdm
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
+from cli_common import add_gdino_threshold_args  # noqa: E402
 from gdino_utils import gdino_preprocess  # noqa: E402  (scripts/ on sys.path)
 from yolo_io import xyxy_to_yolo, write_yolo_labels
 
@@ -256,10 +257,7 @@ def parse_args_flat(argv=None) -> argparse.Namespace:
                         help="Flat directory of input images")
     parser.add_argument("--flat-out", type=Path, required=True,
                         help="Output directory for YOLO txt labels")
-    parser.add_argument("--box-threshold", type=float, default=0.30)
-    parser.add_argument("--text-threshold", type=float, default=0.25)
-    parser.add_argument("--score-thr", type=float, default=0.35)
-    parser.add_argument("--iou-thr", type=float, default=0.45)
+    add_gdino_threshold_args(parser)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args(argv)
