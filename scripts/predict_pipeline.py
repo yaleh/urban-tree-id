@@ -30,6 +30,7 @@ import sys
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from gdino_utils import gdino_preprocess  # noqa: E402  (scripts/ on sys.path)
+from image_utils import make_crop_xyxy as make_crop, DEFAULT_CROP_SIZE  # noqa: E402
 
 # ── Constants (mirrored from 03_extract_embeddings.py) ────────────────────────
 
@@ -41,7 +42,7 @@ GDINO_SCORE_THR = 0.35   # post-NMS score filter (was 0.3, now matches pseudo-la
 GDINO_IOU_THR   = 0.45   # NMS IoU threshold
 
 DINOV2_MODEL  = "dinov2_vits14"
-TARGET_SIZE   = 448
+TARGET_SIZE   = DEFAULT_CROP_SIZE
 
 
 # ── Preprocessing (copied verbatim from 03_extract_embeddings.py) ─────────────
@@ -54,26 +55,6 @@ def _make_transforms():
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-
-
-def make_crop(pil_img, box_xyxy, pad_frac=0.05):
-    """Pad bbox slightly and place on a white TARGET_SIZE×TARGET_SIZE canvas."""
-    from PIL import Image
-    W, H = pil_img.size
-    x0, y0, x1, y1 = box_xyxy
-    bw, bh = x1 - x0, y1 - y0
-    x0 = max(0, x0 - bw * pad_frac)
-    y0 = max(0, y0 - bh * pad_frac)
-    x1 = min(W, x1 + bw * pad_frac)
-    y1 = min(H, y1 + bh * pad_frac)
-    crop = pil_img.crop((x0, y0, x1, y1))
-    cw, ch = crop.size
-    scale = TARGET_SIZE / max(cw, ch)
-    new_w, new_h = max(1, int(cw * scale)), max(1, int(ch * scale))
-    scaled = crop.resize((new_w, new_h), Image.LANCZOS)
-    canvas = Image.new("RGB", (TARGET_SIZE, TARGET_SIZE), (255, 255, 255))
-    canvas.paste(scaled, ((TARGET_SIZE - new_w) // 2, (TARGET_SIZE - new_h) // 2))
-    return canvas
 
 
 # ── Detectors ─────────────────────────────────────────────────────────────────

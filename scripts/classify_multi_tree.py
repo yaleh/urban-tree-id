@@ -31,13 +31,14 @@ from PIL import Image, ImageDraw, ImageFont
 from sklearn import svm
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from gdino_utils import gdino_preprocess, gdino_preprocess_with_size
+from image_utils import make_crop_norm as make_crop, DEFAULT_CROP_SIZE
 
 GDINO_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 SHORTEST_EDGE  = 800
 LONGEST_EDGE   = 1333
 GDINO_MEAN     = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 GDINO_STD      = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-CROP_TARGET    = 448
+CROP_TARGET    = DEFAULT_CROP_SIZE
 
 DINOV2_TRANSFORM = T.Compose([
     T.Resize(CROP_TARGET),
@@ -56,30 +57,6 @@ COLORS = [
     (220, 100,   0),
     (  0, 140,  80),
 ]
-
-
-# ── Crop utility ───────────────────────────────────────────────────────────────
-
-def make_crop(pil_img, box_norm, pad_frac=0.05):
-    """box_norm: (x0,y0,x1,y1) normalized [0,1] in original image space."""
-    W, H = pil_img.size
-    x0 = box_norm[0] * W
-    y0 = box_norm[1] * H
-    x1 = box_norm[2] * W
-    y1 = box_norm[3] * H
-    bw, bh = x1 - x0, y1 - y0
-    x0 = max(0, x0 - bw * pad_frac)
-    y0 = max(0, y0 - bh * pad_frac)
-    x1 = min(W, x1 + bw * pad_frac)
-    y1 = min(H, y1 + bh * pad_frac)
-    crop = pil_img.crop((x0, y0, x1, y1))
-    cw, ch = crop.size
-    scale = CROP_TARGET / max(cw, ch)
-    nw, nh = max(1, int(cw * scale)), max(1, int(ch * scale))
-    scaled = crop.resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("RGB", (CROP_TARGET, CROP_TARGET), (255, 255, 255))
-    canvas.paste(scaled, ((CROP_TARGET - nw) // 2, (CROP_TARGET - nh) // 2))
-    return canvas
 
 
 # ── Annotation ─────────────────────────────────────────────────────────────────
