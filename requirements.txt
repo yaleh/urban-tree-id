@@ -1,17 +1,18 @@
-# PyTorch (CUDA 11.8)
-torch==2.0.0+cu118
-torchvision==0.15.0+cu118
+# PyTorch — install separately with the correct CUDA index URL:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+torch
+torchvision
 
 # Detection & Classification
-ultralytics==8.4.56
-rfdetr==1.1.0
-transformers==4.44.0
+ultralytics>=8.4
+rfdetr>=1.1
+transformers>=4.44
 
 # Vision & ML
 Pillow
 opencv-python
 numpy
-scikit-learn==1.5.0
+scikit-learn>=1.5
 joblib
 
 # Utilities
