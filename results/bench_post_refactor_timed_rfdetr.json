@@ -1,0 +1,13 @@
+{
+  "mode": "timed_bench",
+  "detector": "rf-detr",
+  "batch_size": 32,
+  "n_preloaded": 384,
+  "n_batches": 12,
+  "warmup_s": 5.0,
+  "duration_s": 30.0,
+  "n_measured": 480,
+  "n_warmup": 32,
+  "elapsed_s": 26.19,
+  "throughput_img_per_s": 18.33
+}

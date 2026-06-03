@@ -1,0 +1,4 @@
+# Files to exclude from `git archive` exports
+results/                                    export-ignore
+runs/                                       export-ignore
+gdino_dinov2_svm/results/svm_model.joblib   export-ignore

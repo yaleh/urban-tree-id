@@ -43,11 +43,13 @@ log = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
-_scripts = Path(__file__).parent
+_scripts = Path(__file__).resolve().parent
 if str(_scripts) not in sys.path:
     sys.path.insert(0, str(_scripts))
+from _path_setup import setup as _setup; _setup()  # noqa: E402
 
 from cli_common import add_detector_args  # noqa: E402
+from eval_metrics import read_gt_label, score_batch  # noqa: E402
 from predict_pipeline import (  # noqa: E402
     gdino_forward_batch,
     gdino_preprocess_batch,
@@ -86,22 +88,7 @@ def _find_images(test_dir: Path, limit: int | None = None) -> list[Path]:
     return images
 
 
-def _read_gt_label(ann_dir: Path, img_path: Path) -> str | None:
-    """
-    Return the ground-truth label for img_path from TDUS annotation JSON.
-    Expected annotation path: ann_dir / (img_path.name + ".json")
-    Label: ann["tags"][0]["value"]
-    Returns None if annotation is missing.
-    """
-    ann_path = ann_dir / (img_path.name + ".json")
-    if not ann_path.exists():
-        return None
-    with open(ann_path) as f:
-        ann = json.load(f)
-    try:
-        return ann["tags"][0]["value"]
-    except (KeyError, IndexError):
-        return None
+# _read_gt_label removed — use eval_metrics.read_gt_label instead
 
 
 # ── DataLoader dataset ────────────────────────────────────────────────────────
@@ -145,46 +132,7 @@ def _collate_tensor(batch):
     return list(tensors), list(paths)
 
 
-# ── Scoring helper (Method D: one log line per batch) ─────────────────────────
-
-def _score_batch(
-    batch_paths: list,
-    predictions: list,
-    batch_n_boxes: list,
-    gt_labels_map: dict,
-    n_total: int,
-    n_correct: int,
-    n_no_detection: int,
-    per_class: dict,
-    log_fn,
-    throughput_only: bool = False,
-) -> tuple:
-    """Accumulate per-image stats and emit exactly one log line for the batch.
-
-    When throughput_only=True, skip accuracy bookkeeping and just count images.
-    """
-    if throughput_only:
-        n_total += len(batch_paths)
-        log_fn(f"batch n={len(batch_paths)}  running_total={n_total}")
-        return n_total, n_correct, n_no_detection, per_class
-
-    n_batch_correct = 0
-    for path, (species, confidence), n_boxes in zip(batch_paths, predictions, batch_n_boxes):
-        gt_label = gt_labels_map[path]
-        n_total += 1
-        if n_boxes == 0:
-            n_no_detection += 1
-        per_class[gt_label]["total"] += 1
-        if species == gt_label:
-            n_correct      += 1
-            n_batch_correct += 1
-            per_class[gt_label]["correct"] += 1
-    top1_running = n_correct / n_total if n_total > 0 else 0.0
-    log_fn(
-        f"batch n={len(batch_paths)}  correct={n_batch_correct}/{len(batch_paths)}"
-        f"  running_top1={top1_running:.3f}  no_det={n_no_detection}"
-    )
-    return n_total, n_correct, n_no_detection, per_class
+# _score_batch removed — use eval_metrics.score_batch instead
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -196,19 +144,19 @@ def _tensor_to_pil(t: "torch.Tensor") -> "Image.Image":
 
 
 def _run_detector_loop(
-    detector: str,
+    detector_obj,
     loader,
-    models: dict,
     device: str,
+    dinov2,
+    clf,
     gt_labels_map: dict,
     throughput_only: bool,
-    yolo_imgsz: int,
 ) -> "tuple[int, int, int, dict]":
     """Run batched detect → crop → embed → predict → score over a DataLoader.
 
-    Handles all three detector branches (gdino / rf-detr / yolo) with their
-    respective double-buffer strategies.  Returns (n_total, n_correct,
-    n_no_detection, per_class).
+    Uses the BaseDetector double-buffer interface when detector_obj.supports_pipeline
+    is True (gdino, rf-detr), and a simple batch loop for yolo.
+    Returns (n_total, n_correct, n_no_detection, per_class).
     """
     import torch
     from collections import defaultdict
@@ -224,74 +172,41 @@ def _run_detector_loop(
         imgs_gpu     = [t.float().div(255.0).to(device, non_blocking=True) for t in tensors]
         crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes)
         with torch.no_grad():
-            feat = models["dinov2"].forward_features(crops_tensor)
+            feat = dinov2.forward_features(crops_tensor)
         embeddings   = feat["x_norm_clstoken"].cpu().float().numpy()
-        predictions  = predict_species_batch(embeddings, models["clf"])
+        predictions  = predict_species_batch(embeddings, clf)
         batch_n_boxes = [len(b) for b in batch_boxes]
-        n_total, n_correct, n_no_detection, per_class = _score_batch(
+        n_total, n_correct, n_no_detection, per_class = score_batch(
             paths, predictions, batch_n_boxes, gt_labels_map,
             n_total, n_correct, n_no_detection, per_class, log.info,
             throughput_only=throughput_only,
         )
 
-    if detector == "gdino":
-        # Double-buffer: proc() runs in a thread while GPU processes the previous batch.
-        with ThreadPoolExecutor(max_workers=1) as proc_pool:
+    if detector_obj.supports_pipeline:
+        # Generic double-buffer: CPU preprocess in thread, GPU forward on main thread.
+        with ThreadPoolExecutor(max_workers=1) as pool:
             loader_iter = iter(loader)
             cur_tensors, cur_paths = next(loader_iter)
-            cur_pil          = [_tensor_to_pil(t) for t in cur_tensors]
-            cur_target_sizes = [(t.shape[1], t.shape[2]) for t in cur_tensors]
-            cur_proc_future  = proc_pool.submit(
-                gdino_preprocess_batch, cur_pil, models["gdino_proc"])
+            cur_pil    = [_tensor_to_pil(t) for t in cur_tensors]
+            cur_future = pool.submit(detector_obj.preprocess_cpu, cur_pil)
 
             for nxt_tensors, nxt_paths in loader_iter:
-                nxt_pil          = [_tensor_to_pil(t) for t in nxt_tensors]
-                nxt_target_sizes = [(t.shape[1], t.shape[2]) for t in nxt_tensors]
-                nxt_proc_future  = proc_pool.submit(
-                    gdino_preprocess_batch, nxt_pil, models["gdino_proc"])
+                nxt_pil    = [_tensor_to_pil(t) for t in nxt_tensors]
+                nxt_future = pool.submit(detector_obj.preprocess_cpu, nxt_pil)
 
-                inputs_cpu  = cur_proc_future.result()
-                batch_boxes = gdino_forward_batch(
-                    inputs_cpu, cur_target_sizes, device,
-                    models["gdino_proc"], models["gdino_model"])
+                batch_boxes = detector_obj.forward_preprocessed(cur_future.result())
                 _process_batch(cur_tensors, cur_paths, batch_boxes)
 
                 cur_tensors, cur_paths = nxt_tensors, nxt_paths
-                cur_target_sizes       = nxt_target_sizes
-                cur_proc_future        = nxt_proc_future
+                cur_future             = nxt_future
 
-            # Last batch
-            inputs_cpu  = cur_proc_future.result()
-            batch_boxes = gdino_forward_batch(
-                inputs_cpu, cur_target_sizes, device,
-                models["gdino_proc"], models["gdino_model"])
-            _process_batch(cur_tensors, cur_paths, batch_boxes)
-
-    elif detector == "rf-detr":
-        # Double-buffer: preprocess_cpu() in thread, forward on GPU.
-        rfdetr = models["rfdetr_detector"]
-        with ThreadPoolExecutor(max_workers=1) as proc_pool:
-            loader_iter = iter(loader)
-            cur_tensors, cur_paths = next(loader_iter)
-            cur_proc_future = proc_pool.submit(rfdetr.preprocess_cpu, cur_tensors)
-
-            for nxt_tensors, nxt_paths in loader_iter:
-                nxt_proc_future        = proc_pool.submit(rfdetr.preprocess_cpu, nxt_tensors)
-                tensors_cpu, orig_sizes = cur_proc_future.result()
-                batch_boxes            = rfdetr.forward_from_cpu_tensors(tensors_cpu, orig_sizes)
-                _process_batch(cur_tensors, cur_paths, batch_boxes)
-                cur_tensors, cur_paths = nxt_tensors, nxt_paths
-                cur_proc_future        = nxt_proc_future
-
-            # Last batch
-            tensors_cpu, orig_sizes = cur_proc_future.result()
-            batch_boxes             = rfdetr.forward_from_cpu_tensors(tensors_cpu, orig_sizes)
+            batch_boxes = detector_obj.forward_preprocessed(cur_future.result())
             _process_batch(cur_tensors, cur_paths, batch_boxes)
 
     else:  # yolo — Ultralytics handles its own batching
         for batch_tensors, batch_paths in loader:
-            batch_np    = [t.permute(1, 2, 0).contiguous().numpy() for t in batch_tensors]
-            batch_boxes = detect_yolo_batch(batch_np, models["yolo_model"], imgsz=yolo_imgsz)
+            pil_imgs    = [_tensor_to_pil(t) for t in batch_tensors]
+            batch_boxes = detector_obj.detect_batch(pil_imgs)
             _process_batch(batch_tensors, batch_paths, batch_boxes)
 
     return n_total, n_correct, n_no_detection, per_class
@@ -386,16 +301,15 @@ def build_parser() -> argparse.ArgumentParser:
 def _preload_batches(
     images: list,
     batch_size: int,
-    detector: str,
-    models: dict,
+    detector_obj,
     device: str,
     max_edge: int,
-    yolo_imgsz: int | None = None,
 ) -> list[dict]:
     """Load and preprocess images entirely into CPU memory (outside timing).
 
-    Returns a list of batch dicts keyed by detector type.
-    Each dict always contains 'imgs_gpu' (float [0,1] list of Tensors for DINOv2).
+    Returns a list of batch dicts. When detector_obj.supports_pipeline is True,
+    each dict contains 'prep' (preprocess_cpu output) for zero-copy GPU forward.
+    All dicts contain 'imgs_cpu' (CHW uint8 tensors) for the DINOv2 crop path.
     """
     import numpy as np
     import torch
@@ -419,34 +333,26 @@ def _preload_batches(
     for i in range(0, len(tensors_uint8), batch_size):
         batch_t   = tensors_uint8[i : i + batch_size]
         batch_pil = pil_images[i : i + batch_size]
-        # Keep CPU uint8 tensors for H2D at inference time — avoids allocating
-        # VRAM for ALL preloaded batches simultaneously (would OOM for GDino).
-        imgs_cpu  = batch_t  # CHW uint8, moved to GPU per-batch in _run_timed_bench
-
-        if detector == "gdino":
-            inputs_cpu   = gdino_preprocess_batch(batch_pil, models["gdino_proc"])
-            target_sizes = [(t.shape[1], t.shape[2]) for t in batch_t]
-            batches.append({"inputs_cpu": inputs_cpu, "target_sizes": target_sizes,
-                            "imgs_cpu": imgs_cpu, "_batch_size": len(batch_t)})
-        elif detector == "yolo":
+        imgs_cpu  = batch_t
+        if detector_obj.supports_pipeline:
+            prep = detector_obj.preprocess_cpu(batch_pil)
+            batches.append({"prep": prep, "imgs_cpu": imgs_cpu, "_batch_size": len(batch_t)})
+        else:
+            # HWC numpy arrays: skip Ultralytics' internal PIL→numpy conversion (~15ms/img)
             batch_np = [t.permute(1, 2, 0).contiguous().numpy() for t in batch_t]
             batches.append({"batch_np": batch_np, "imgs_cpu": imgs_cpu,
                             "_batch_size": len(batch_t)})
-        elif detector == "rf-detr":
-            tensors_cpu, orig_sizes = models["rfdetr_detector"].preprocess_cpu(batch_t)
-            batches.append({"tensors_cpu": tensors_cpu, "orig_sizes": orig_sizes,
-                            "imgs_cpu": imgs_cpu, "_batch_size": len(batch_t)})
     return batches
 
 
 def _run_timed_bench(
     preloaded: list[dict],
-    models: dict,
+    detector_obj,
     device: str,
-    detector: str,
+    dinov2,
+    clf,
     duration: float,
     warmup: float,
-    yolo_imgsz: int,
     log_fn,
 ) -> tuple[int, int, float, float]:
     """Loop over preloaded batches for warmup+duration seconds.
@@ -456,6 +362,8 @@ def _run_timed_bench(
     """
     import time
     import torch
+
+    torch.cuda.empty_cache()  # release any pool fragmentation from preload phase
 
     n_batches  = len(preloaded)
     t0         = time.perf_counter()
@@ -478,32 +386,25 @@ def _run_timed_bench(
         batch      = preloaded[batch_idx % n_batches]
         batch_size = batch["_batch_size"]
 
-        # H2D for DINOv2 crop pipeline: done per-batch to avoid holding all
-        # preloaded images in VRAM simultaneously.
+        if detector_obj.supports_pipeline:
+            batch_boxes = detector_obj.forward_preprocessed(batch["prep"])
+        else:
+            batch_boxes = detector_obj.detect_batch(batch["batch_np"])
+
+        # H2D after detection: YOLO activations released before image tensors live on GPU
         imgs_gpu = [t.float().div(255.0).to(device, non_blocking=True)
                     for t in batch["imgs_cpu"]]
-
-        if detector == "gdino":
-            batch_boxes = gdino_forward_batch(
-                batch["inputs_cpu"], batch["target_sizes"], device,
-                models["gdino_proc"], models["gdino_model"],
-            )
-        elif detector == "yolo":
-            batch_boxes = detect_yolo_batch(
-                batch["batch_np"], models["yolo_model"], imgsz=yolo_imgsz,
-            )
-        elif detector == "rf-detr":
-            batch_boxes = models["rfdetr_detector"].forward_from_cpu_tensors(
-                batch["tensors_cpu"], batch["orig_sizes"],
-            )
-        else:
-            raise ValueError(detector)
-
         crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes)
+        del imgs_gpu  # free image batch before DINOv2 forward
+
         with torch.no_grad():
-            feat = models["dinov2"].forward_features(crops_tensor)
+            feat = dinov2.forward_features(crops_tensor)
+        del crops_tensor  # free crop batch before next iteration
+
         embeddings = feat["x_norm_clstoken"].cpu().float().numpy()
-        predict_species_batch(embeddings, models["clf"])
+        del feat  # free DINOv2 output dict (holds GPU tensors)
+
+        predict_species_batch(embeddings, clf)
 
         if measuring:
             n_total += batch_size
@@ -567,7 +468,7 @@ def main():
         gt_labels_map = {}
         n_no_ann = 0
         for p in all_images:
-            lbl = _read_gt_label(ann_dir, p)
+            lbl = read_gt_label(ann_dir, p)
             if lbl is None:
                 log.warning(f"No annotation for {p.name}, skipping")
                 n_no_ann += 1
@@ -584,18 +485,27 @@ def main():
         yolo_checkpoint   = args.yolo_checkpoint,
         svm_model_path    = args.svm_model,
         rf_detr_checkpoint= args.rf_detr_checkpoint,
+        yolo_imgsz        = yolo_imgsz,
     )
     log.info("Models loaded.")
 
+    # Eagerly initialise detector model weights (lazy detectors load on first call)
+    from PIL import Image as _PILImage
+    _dummy = _PILImage.new("RGB", (64, 64))
+    models["detector"].detect_batch([_dummy])
+    log.info("Detector model weights initialised.")
+
     # ── Timed-bench mode: preload → warmup → measure (no IO in critical path) ──
     if args.timed_bench:
+        import torch as _torch
+        _torch.cuda.empty_cache()   # release activation cache from warmup run
         log.info(
             f"Timed-bench mode: preloading images "
             f"(warmup={args.warmup}s  duration={args.duration}s)"
         )
         preloaded = _preload_batches(
-            valid_images, args.batch_size, args.detector, models,
-            device, args.max_edge, yolo_imgsz,
+            valid_images, args.batch_size, models["detector"],
+            device, args.max_edge,
         )
         n_imgs_preloaded = sum(b["_batch_size"] for b in preloaded)
         log.info(
@@ -603,8 +513,9 @@ def main():
             f"(from {len(valid_images)} source images)"
         )
         n_total, n_warmup, elapsed, throughput = _run_timed_bench(
-            preloaded, models, device, args.detector,
-            args.duration, args.warmup, yolo_imgsz, log.info,
+            preloaded, models["detector"], device,
+            models["dinov2"], models["clf"],
+            args.duration, args.warmup, log.info,
         )
         log.info(
             f"Timed-bench results: {n_total} imgs measured  "
@@ -646,8 +557,9 @@ def main():
     t0 = time.perf_counter()
 
     n_total, n_correct, n_no_detection, per_class = _run_detector_loop(
-        args.detector, loader, models, device,
-        gt_labels_map, args.throughput_only, yolo_imgsz,
+        models["detector"], loader, device,
+        models["dinov2"], models["clf"],
+        gt_labels_map, args.throughput_only,
     )
 
     elapsed = time.perf_counter() - t0

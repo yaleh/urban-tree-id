@@ -15,13 +15,20 @@ Usage:
 """
 
 import os
+import sys
+from pathlib import Path
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+_scripts = Path(__file__).resolve().parent
+if str(_scripts) not in sys.path:
+    sys.path.insert(0, str(_scripts))
+from _path_setup import setup as _setup; _setup()
 
 import argparse
 import glob as glob_mod
 import math
 import random
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -33,6 +40,7 @@ from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from gdino_utils import gdino_preprocess, gdino_preprocess_with_size
 from image_utils import make_crop_norm as make_crop, make_crop_xyxy, DEFAULT_CROP_SIZE
 from predict_pipeline import detect_gdino, detect_yolo
+from base_detector import BaseDetector
 
 GDINO_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 SHORTEST_EDGE  = 800
@@ -199,46 +207,46 @@ def classify_detections(pil_img, boxes_xyxy, dinov2, clf, device):
     return results
 
 
-def detect_and_classify(img_path, gdino_model, gdino_processor,
-                        dinov2, clf, device, text, score_thr):
-    pil = Image.open(img_path).convert("RGB")
-
-    # Delegate detection to predict_pipeline.detect_gdino (xyxy pixel coords,
-    # NMS IoU 0.45, score_thr 0.35 — matches pseudo-label generation defaults)
-    boxes_xyxy = detect_gdino(pil, device, proc=gdino_processor, model=gdino_model)
-
-    results = []
-    for det in classify_detections(pil, boxes_xyxy, dinov2, clf, device):
-        results.append({
-            "box_norm":  det["box_norm"],
-            "species":   det["species"],
-            "det_score": 0.0,   # detect_gdino does not expose per-box scores post-NMS
-            "svm_conf":  det["svm_conf"],
-        })
-    return results
-
-
-def detect_and_classify_yolo(img_path, yolo_model, dinov2, clf, device, conf, imgsz):
-    """Detect trees with YOLO, classify crops with DINOv2 + SVM.
+def detect_and_classify(img_path, detector: BaseDetector, dinov2, clf, device):
+    """Detect trees with any BaseDetector, classify crops with DINOv2 + SVM.
 
     Returns list of dicts with keys: box_norm, species, det_score, svm_conf.
+    Replaces the old gdino-specific and yolo-specific variants.
     """
-    pil = Image.open(img_path).convert("RGB")
-
-    # detect_yolo returns xyxy pixel coordinates
-    boxes_xyxy = detect_yolo(pil, model=yolo_model, imgsz=imgsz)
+    pil       = Image.open(img_path).convert("RGB")
+    boxes_xyxy = detector.detect(pil)
     if not boxes_xyxy:
         return []
-
-    output = []
-    for det in classify_detections(pil, boxes_xyxy, dinov2, clf, device):
-        output.append({
+    return [
+        {
             "box_norm":  det["box_norm"],
             "species":   det["species"],
-            "det_score": 0.0,   # detect_yolo does not expose per-box scores
+            "det_score": 0.0,
             "svm_conf":  det["svm_conf"],
-        })
-    return output
+        }
+        for det in classify_detections(pil, boxes_xyxy, dinov2, clf, device)
+    ]
+
+
+# ── Legacy shims (kept for backward compatibility with older call-sites) ────────
+
+def detect_and_classify_gdino(img_path, gdino_model, gdino_processor,
+                               dinov2, clf, device, text=None, score_thr=None):
+    """Deprecated: use detect_and_classify(img_path, GDinoDetector(...), ...) instead."""
+    from gdino_detector import GDinoDetector
+    det = GDinoDetector(device=str(device))
+    det._proc  = gdino_processor
+    det._model = gdino_model
+    return detect_and_classify(img_path, det, dinov2, clf, device)
+
+
+def detect_and_classify_yolo(img_path, yolo_model, dinov2, clf, device,
+                              conf=0.25, imgsz=1280):
+    """Deprecated: use detect_and_classify(img_path, YOLODetector(...), ...) instead."""
+    from yolo_detector import YOLODetector
+    det = YOLODetector(checkpoint="", imgsz=imgsz)
+    det._model = yolo_model
+    return detect_and_classify(img_path, det, dinov2, clf, device)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -260,16 +268,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}  |  {len(img_paths)} image(s)  |  detector={args.detector}")
 
-    # Load models based on detector choice
+    # Load detector via factory
+    from detector_factory import make_detector
     if args.detector == "gdino":
         print(f"Loading GDino ({GDINO_MODEL_ID})...")
-        gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL_ID)
-        gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(GDINO_MODEL_ID)
-        gdino_model = gdino_model.to(device).eval()
+        detector_obj = make_detector("gdino", device=str(device))
     else:
-        from ultralytics import YOLO
         print(f"Loading YOLO ({args.yolo_checkpoint})...")
-        yolo_model = YOLO(args.yolo_checkpoint)
+        detector_obj = make_detector(
+            "yolo", device=str(device),
+            checkpoint=args.yolo_checkpoint, imgsz=args.yolo_imgsz,
+        )
 
     print("Loading DINOv2 vits14...")
     dinov2 = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14").to(device).eval()
@@ -291,16 +300,7 @@ def main():
         stem = Path(img_path).stem
         print(f"\n{'─'*60}\n{stem}")
 
-        if args.detector == "gdino":
-            detections = detect_and_classify(
-                img_path, gdino_model, gdino_processor,
-                dinov2, clf, device, args.text, args.score_thr,
-            )
-        else:
-            detections = detect_and_classify_yolo(
-                img_path, yolo_model, dinov2, clf, device,
-                args.yolo_conf, args.yolo_imgsz,
-            )
+        detections = detect_and_classify(img_path, detector_obj, dinov2, clf, device)
 
         if not detections:
             print("  No trees detected above threshold.")

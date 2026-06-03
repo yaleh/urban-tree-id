@@ -45,8 +45,8 @@ def _patch_rfdetr(xyxy: np.ndarray):
 
 class TestRFDETRDetector:
 
-    def test_detect_returns_ndarray(self):
-        """detect() must return a numpy ndarray with shape (N, 4) and dtype float32."""
+    def test_detect_returns_list(self):
+        """detect() returns a list of [x0, y0, x1, y1] rows (BaseDetector interface)."""
         boxes = np.array([[10, 20, 50, 80], [5, 15, 30, 60]], dtype=np.float32)
 
         with _patch_rfdetr(boxes):
@@ -54,14 +54,13 @@ class TestRFDETRDetector:
             det = RFDETRDetector(checkpoint="fake.pth", device="cpu")
             result = det.detect("fake_image.jpg")
 
-        assert isinstance(result, np.ndarray), (
-            f"Expected np.ndarray, got {type(result)}"
-        )
-        assert result.shape == (2, 4), f"Expected shape (2, 4), got {result.shape}"
-        assert result.dtype == np.float32, f"Expected float32, got {result.dtype}"
+        assert isinstance(result, list), f"Expected list, got {type(result)}"
+        assert len(result) == 2
+        for row in result:
+            assert len(row) == 4
 
-    def test_detect_empty_returns_zeros(self):
-        """When no detections exist, detect() must return shape (0, 4) float32 array."""
+    def test_detect_empty_returns_empty_list(self):
+        """When no detections exist, detect() returns []."""
         empty = np.zeros((0, 4), dtype=np.float32)
 
         with _patch_rfdetr(empty):
@@ -69,14 +68,10 @@ class TestRFDETRDetector:
             det = RFDETRDetector(checkpoint="fake.pth", device="cpu")
             result = det.detect("fake_image.jpg")
 
-        assert isinstance(result, np.ndarray), (
-            f"Expected np.ndarray, got {type(result)}"
-        )
-        assert result.shape == (0, 4), f"Expected shape (0, 4), got {result.shape}"
-        assert result.dtype == np.float32, f"Expected float32, got {result.dtype}"
+        assert result == [], f"Expected [], got {result}"
 
     def test_detect_xyxy_format(self):
-        """Each row in the result must satisfy x1 < x2 and y1 < y2."""
+        """Each row in the result must satisfy x0 < x1 and y0 < y1."""
         boxes = np.array(
             [[10.0, 20.0, 50.0, 80.0],
              [5.0,  15.0, 30.0, 60.0]],
@@ -90,11 +85,11 @@ class TestRFDETRDetector:
 
         for i, row in enumerate(result):
             x1, y1, x2, y2 = row
-            assert x1 < x2, f"Row {i}: x1={x1} must be < x2={x2}"
-            assert y1 < y2, f"Row {i}: y1={y1} must be < y2={y2}"
+            assert x1 < x2, f"Row {i}: x0={x1} must be < x1={x2}"
+            assert y1 < y2, f"Row {i}: y0={y1} must be < y1={y2}"
 
-    def test_detect_batch_length(self):
-        """detect_batch(imgs) must return a list whose length equals len(imgs)."""
+    def test_detect_batch_returns_list_of_lists(self):
+        """detect_batch() returns list[list[list[float]]] matching BaseDetector."""
         boxes = np.array([[0.0, 0.0, 10.0, 10.0]], dtype=np.float32)
         images = ["img1.jpg", "img2.jpg", "img3.jpg"]
 
@@ -103,16 +98,23 @@ class TestRFDETRDetector:
             det = RFDETRDetector(checkpoint="fake.pth", device="cpu")
             results = det.detect_batch(images)
 
-        assert isinstance(results, list), (
-            f"Expected list, got {type(results)}"
-        )
-        assert len(results) == len(images), (
-            f"Expected {len(images)} results, got {len(results)}"
-        )
+        assert isinstance(results, list)
+        assert len(results) == len(images)
         for r in results:
-            assert isinstance(r, np.ndarray), (
-                f"Each element must be np.ndarray, got {type(r)}"
-            )
+            assert isinstance(r, list), f"Each element must be list, got {type(r)}"
+
+    def test_implements_base_detector(self):
+        """RFDETRDetector must be a subclass of BaseDetector."""
+        from rf_detr_detector import RFDETRDetector
+        from base_detector import BaseDetector
+        assert issubclass(RFDETRDetector, BaseDetector)
+
+    def test_supports_pipeline_true(self):
+        boxes = np.zeros((0, 4), dtype=np.float32)
+        with _patch_rfdetr(boxes):
+            from rf_detr_detector import RFDETRDetector
+            det = RFDETRDetector(checkpoint="fake.pth", device="cpu")
+        assert det.supports_pipeline is True
 
 
 # ── detect_batch_gpu tests ────────────────────────────────────────────────────

@@ -263,15 +263,16 @@ class TestGdinoPreprocessSplit:
 
 class TestBatchLogging:
     """
-    _score_batch must emit exactly ONE log line per batch call (not one per image),
+    score_batch (moved to eval_metrics) must emit exactly ONE log line per batch call,
     and return updated (n_total, n_correct, n_no_detection, per_class).
+    benchmark_pipeline re-imports score_batch from eval_metrics.
     """
 
     def _call_score_batch(self, batch_paths, predictions, batch_n_boxes, gt_map, log_fn=None):
-        from benchmark_pipeline import _score_batch
+        from eval_metrics import score_batch
         from collections import defaultdict
         per_class = defaultdict(lambda: {"correct": 0, "total": 0})
-        return _score_batch(
+        return score_batch(
             batch_paths=batch_paths,
             predictions=predictions,
             batch_n_boxes=batch_n_boxes,
@@ -282,8 +283,8 @@ class TestBatchLogging:
         )
 
     def test_score_batch_exists(self):
-        from benchmark_pipeline import _score_batch
-        assert callable(_score_batch)
+        from eval_metrics import score_batch
+        assert callable(score_batch)
 
     def test_log_called_exactly_once(self):
         """log_fn must be called exactly once regardless of batch size."""
@@ -492,12 +493,12 @@ class TestRFDETRDoubleBufferInBenchmark:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "rf_detr_detector",
-            str(Path(__file__).parent.parent / "scripts" / "rf_detr_detector.py"),
+            str(Path(__file__).parent.parent / "scripts" / "detection" / "rf_detr_detector.py"),
         )
         mod = importlib.util.module_from_spec(spec)
         assert hasattr(mod, "RFDETRDetector") or True  # module not executed, just check source
         # Load source and check method names
-        src = (Path(__file__).parent.parent / "scripts" / "rf_detr_detector.py").read_text()
+        src = (Path(__file__).parent.parent / "scripts" / "detection" / "rf_detr_detector.py").read_text()
         assert "def preprocess_cpu" in src
         assert "def forward_from_cpu_tensors" in src
 
@@ -616,30 +617,44 @@ class TestTimedBenchArgs:
         assert args.warmup == 5
 
 
+def _make_mock_detector(supports_pipeline=False, batch_size=2):
+    """Return a mock BaseDetector for testing loop functions."""
+    det = MagicMock()
+    det.supports_pipeline = supports_pipeline
+    det.detect_batch.return_value = [[] for _ in range(batch_size)]
+    det.preprocess_cpu.return_value = {"dummy": True}
+    det.forward_preprocessed.return_value = [[] for _ in range(batch_size)]
+    return det
+
+
 class TestRunTimedBench:
     """_run_timed_bench must honour duration/warmup and count correctly."""
 
-    def _make_preloaded(self, n_batches=3, batch_size=4):
-        """Fake preloaded GDino batches with all required keys."""
+    def _make_preloaded(self, n_batches=3, batch_size=4, supports_pipeline=True):
+        """Fake preloaded batches using the new unified format."""
         batches = []
         for _ in range(n_batches):
             imgs_cpu = [torch.zeros(3, 64, 64, dtype=torch.uint8) for _ in range(batch_size)]
-            batches.append({
-                "imgs_cpu":    imgs_cpu,
-                "_batch_size": batch_size,
-                # GDino-specific (forward is mocked, values don't matter)
-                "inputs_cpu":   {"input_ids": torch.zeros(1)},
-                "target_sizes": [(64, 64)] * batch_size,
-            })
+            if supports_pipeline:
+                batches.append({
+                    "prep":        {"dummy": True},
+                    "imgs_cpu":    imgs_cpu,
+                    "_batch_size": batch_size,
+                })
+            else:
+                from PIL import Image as PILImage
+                pil_imgs = [PILImage.new("RGB", (64, 64)) for _ in range(batch_size)]
+                batches.append({
+                    "pil_imgs":    pil_imgs,
+                    "imgs_cpu":    imgs_cpu,
+                    "_batch_size": batch_size,
+                })
         return batches
 
-    def _mock_models(self):
-        models = MagicMock()
-        # DINOv2 returns a dict with "x_norm_clstoken"
-        feat = MagicMock()
-        feat.__getitem__ = lambda self, k: torch.zeros(1, 384)
-        models["dinov2"].forward_features.return_value = {"x_norm_clstoken": torch.zeros(1, 384)}
-        return models
+    def _make_dinov2(self):
+        dinov2 = MagicMock()
+        dinov2.forward_features.return_value = {"x_norm_clstoken": torch.zeros(1, 384)}
+        return dinov2
 
     def test_run_timed_bench_exists(self):
         from benchmark_pipeline import _run_timed_bench
@@ -647,59 +662,69 @@ class TestRunTimedBench:
 
     def test_returns_four_tuple(self):
         from benchmark_pipeline import _run_timed_bench
-        preloaded = self._make_preloaded()
-        models = self._mock_models()
-        with patch("benchmark_pipeline.gdino_forward_batch", return_value=[[] for _ in range(4)]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch", return_value=torch.zeros(0, 3, 224, 224)), \
-             patch("benchmark_pipeline.predict_species_batch", return_value=[("Oak", 0.9)] * 4):
+        batch_size = 4
+        preloaded = self._make_preloaded(batch_size=batch_size)
+        det = _make_mock_detector(supports_pipeline=True, batch_size=batch_size)
+        dinov2 = self._make_dinov2()
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(0, 3, 224, 224)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9)] * batch_size):
             result = _run_timed_bench(
-                preloaded, models, device="cpu", detector="gdino",
-                duration=0.2, warmup=0.0, yolo_imgsz=640, log_fn=lambda _: None,
+                preloaded, det, device="cpu", dinov2=dinov2, clf=MagicMock(),
+                duration=0.2, warmup=0.0, log_fn=lambda _: None,
             )
-        assert isinstance(result, tuple) and len(result) == 4, f"Expected 4-tuple, got {result}"
+        assert isinstance(result, tuple) and len(result) == 4
 
     def test_n_total_positive_after_warmup(self):
         from benchmark_pipeline import _run_timed_bench
-        preloaded = self._make_preloaded(n_batches=2, batch_size=4)
-        models = self._mock_models()
-        with patch("benchmark_pipeline.gdino_forward_batch", return_value=[[] for _ in range(4)]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch", return_value=torch.zeros(0, 3, 224, 224)), \
-             patch("benchmark_pipeline.predict_species_batch", return_value=[("Oak", 0.9)] * 4):
+        batch_size = 4
+        preloaded = self._make_preloaded(n_batches=2, batch_size=batch_size)
+        det = _make_mock_detector(supports_pipeline=True, batch_size=batch_size)
+        dinov2 = self._make_dinov2()
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(0, 3, 224, 224)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9)] * batch_size):
             n_total, n_warmup, elapsed, tput = _run_timed_bench(
-                preloaded, models, device="cpu", detector="gdino",
-                duration=0.3, warmup=0.0, yolo_imgsz=640, log_fn=lambda _: None,
+                preloaded, det, device="cpu", dinov2=dinov2, clf=MagicMock(),
+                duration=0.3, warmup=0.0, log_fn=lambda _: None,
             )
         assert n_total > 0
 
     def test_throughput_equals_n_total_over_elapsed(self):
         from benchmark_pipeline import _run_timed_bench
-        preloaded = self._make_preloaded(n_batches=2, batch_size=4)
-        models = self._mock_models()
-        with patch("benchmark_pipeline.gdino_forward_batch", return_value=[[] for _ in range(4)]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch", return_value=torch.zeros(0, 3, 224, 224)), \
-             patch("benchmark_pipeline.predict_species_batch", return_value=[("Oak", 0.9)] * 4):
+        batch_size = 4
+        preloaded = self._make_preloaded(n_batches=2, batch_size=batch_size)
+        det = _make_mock_detector(supports_pipeline=True, batch_size=batch_size)
+        dinov2 = self._make_dinov2()
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(0, 3, 224, 224)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9)] * batch_size):
             n_total, _, elapsed, tput = _run_timed_bench(
-                preloaded, models, device="cpu", detector="gdino",
-                duration=0.2, warmup=0.0, yolo_imgsz=640, log_fn=lambda _: None,
+                preloaded, det, device="cpu", dinov2=dinov2, clf=MagicMock(),
+                duration=0.2, warmup=0.0, log_fn=lambda _: None,
             )
         assert abs(tput - n_total / elapsed) < 0.01
 
     def test_warmup_images_not_in_n_total(self):
-        """With warmup > duration, the measuring window is still respected."""
+        """With warmup > 0, the measuring window starts after warmup."""
         from benchmark_pipeline import _run_timed_bench
-        preloaded = self._make_preloaded(n_batches=2, batch_size=4)
-        models = self._mock_models()
-        with patch("benchmark_pipeline.gdino_forward_batch", return_value=[[] for _ in range(4)]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch", return_value=torch.zeros(0, 3, 224, 224)), \
-             patch("benchmark_pipeline.predict_species_batch", return_value=[("Oak", 0.9)] * 4):
+        batch_size = 4
+        preloaded = self._make_preloaded(n_batches=2, batch_size=batch_size)
+        det = _make_mock_detector(supports_pipeline=True, batch_size=batch_size)
+        dinov2 = self._make_dinov2()
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(0, 3, 224, 224)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9)] * batch_size):
             n_total, n_warmup, elapsed, tput = _run_timed_bench(
-                preloaded, models, device="cpu", detector="gdino",
-                duration=0.2, warmup=0.1, yolo_imgsz=640, log_fn=lambda _: None,
+                preloaded, det, device="cpu", dinov2=dinov2, clf=MagicMock(),
+                duration=0.2, warmup=0.1, log_fn=lambda _: None,
             )
-        # Warmup batches must not appear in n_total
         assert n_warmup >= 0
         assert n_total >= 0
-        # n_total should only cover the measuring window
         assert elapsed <= 0.2 + 0.05  # allow 50ms overshoot
 
 
@@ -751,22 +776,12 @@ def _make_fake_loader(n_batches: int = 2, batch_size: int = 2):
     return batches
 
 
-def _make_models_for_loop(detector: str = "yolo"):
-    """Build a minimal models dict with mocked sub-objects."""
+def _make_dinov2_for_loop(batch_size=2):
     dinov2 = MagicMock()
-    dinov2.forward_features.return_value = {"x_norm_clstoken": torch.zeros(2, 384)}
-    models = {"device": "cpu", "dinov2": dinov2, "clf": MagicMock()}
-    if detector == "gdino":
-        models["gdino_proc"]  = MagicMock()
-        models["gdino_model"] = MagicMock()
-    elif detector == "yolo":
-        models["yolo_model"] = MagicMock()
-    elif detector == "rf-detr":
-        rfdetr = MagicMock()
-        rfdetr.preprocess_cpu.return_value = ([torch.zeros(3, 64, 64)], [(64, 64)])
-        rfdetr.forward_from_cpu_tensors.return_value = [[], []]
-        models["rfdetr_detector"] = rfdetr
-    return models
+    dinov2.forward_features.return_value = {
+        "x_norm_clstoken": torch.zeros(batch_size, 384)
+    }
+    return dinov2
 
 
 def _gt_map(loader):
@@ -774,132 +789,95 @@ def _gt_map(loader):
 
 
 class TestRunDetectorLoop:
-    """_run_detector_loop(detector, loader, models, device, gt_map, throughput_only, yolo_imgsz)
+    """_run_detector_loop(detector_obj, loader, device, dinov2, clf, gt_map, throughput_only)
     must run all batches and return (n_total, n_correct, n_no_detection, per_class)."""
+
+    def _run(self, loader, det, gt, throughput_only=False, batch_size=2):
+        from benchmark_pipeline import _run_detector_loop
+        dinov2 = _make_dinov2_for_loop(batch_size)
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
+                   return_value=torch.zeros(batch_size, 3, 448, 448)), \
+             patch("benchmark_pipeline.predict_species_batch",
+                   return_value=[("Oak", 0.9)] * batch_size):
+            return _run_detector_loop(
+                det, loader, "cpu", dinov2, MagicMock(), gt, throughput_only,
+            )
 
     def test_exists(self):
         from benchmark_pipeline import _run_detector_loop
         assert callable(_run_detector_loop)
 
     def test_returns_four_tuple(self):
-        from benchmark_pipeline import _run_detector_loop
         loader = _make_fake_loader()
-        models = _make_models_for_loop("yolo")
+        det = _make_mock_detector(supports_pipeline=False)
         gt = _gt_map(loader)
-        with patch("benchmark_pipeline.detect_yolo_batch", return_value=[[], []]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch",
-                   return_value=torch.zeros(2, 3, 448, 448)), \
-             patch("benchmark_pipeline.predict_species_batch",
-                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
-            result = _run_detector_loop("yolo", loader, models, "cpu", gt, False, 1280)
+        result = self._run(loader, det, gt)
         assert isinstance(result, tuple) and len(result) == 4
 
     def test_n_total_equals_all_images(self):
-        from benchmark_pipeline import _run_detector_loop
         n_batches, batch_size = 3, 2
         loader = _make_fake_loader(n_batches, batch_size)
-        models = _make_models_for_loop("yolo")
+        det = _make_mock_detector(supports_pipeline=False, batch_size=batch_size)
         gt = _gt_map(loader)
-        with patch("benchmark_pipeline.detect_yolo_batch", return_value=[[], []]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch",
-                   return_value=torch.zeros(2, 3, 448, 448)), \
-             patch("benchmark_pipeline.predict_species_batch",
-                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
-            n_total, _, _, _ = _run_detector_loop(
-                "yolo", loader, models, "cpu", gt, False, 1280)
+        n_total, _, _, _ = self._run(loader, det, gt, batch_size=batch_size)
         assert n_total == n_batches * batch_size
 
     def test_n_correct_counts_matching_predictions(self):
         from benchmark_pipeline import _run_detector_loop
         loader = _make_fake_loader(n_batches=1, batch_size=2)
-        models = _make_models_for_loop("yolo")
-        # Both GT = Oak; predictions: Oak correct, Elm wrong
+        det = _make_mock_detector(supports_pipeline=False, batch_size=2)
         gt = {"/img/b0_i0.jpg": "Oak", "/img/b0_i1.jpg": "Oak"}
-        with patch("benchmark_pipeline.detect_yolo_batch",
-                   return_value=[[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0]]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch",
+        dinov2 = _make_dinov2_for_loop(2)
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
                    return_value=torch.zeros(2, 3, 448, 448)), \
              patch("benchmark_pipeline.predict_species_batch",
                    return_value=[("Oak", 0.9), ("Elm", 0.7)]):
             n_total, n_correct, _, _ = _run_detector_loop(
-                "yolo", loader, models, "cpu", gt, False, 1280)
-        assert n_total == 2
-        assert n_correct == 1
+                det, loader, "cpu", dinov2, MagicMock(), gt, False,
+            )
+        assert n_total == 2 and n_correct == 1
 
     def test_throughput_only_skips_scoring(self):
-        from benchmark_pipeline import _run_detector_loop
         loader = _make_fake_loader()
-        models = _make_models_for_loop("yolo")
-        # Pass empty gt — throughput_only must not read it
-        with patch("benchmark_pipeline.detect_yolo_batch", return_value=[[], []]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch",
-                   return_value=torch.zeros(2, 3, 448, 448)), \
-             patch("benchmark_pipeline.predict_species_batch",
-                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
-            n_total, n_correct, _, _ = _run_detector_loop(
-                "yolo", loader, models, "cpu", {}, True, 1280)
+        det = _make_mock_detector(supports_pipeline=False)
+        n_total, n_correct, _, _ = self._run(loader, det, {}, throughput_only=True)
         assert n_correct == 0
 
-    def test_yolo_calls_detect_yolo_batch_once_per_batch(self):
-        from benchmark_pipeline import _run_detector_loop
+    def test_yolo_detect_batch_called_once_per_loader_batch(self):
         n_batches = 3
         loader = _make_fake_loader(n_batches=n_batches)
-        models = _make_models_for_loop("yolo")
+        det = _make_mock_detector(supports_pipeline=False, batch_size=2)
         gt = _gt_map(loader)
-        mock_detect = MagicMock(return_value=[[], []])
-        with patch("benchmark_pipeline.detect_yolo_batch", mock_detect), \
-             patch("benchmark_pipeline.make_crops_gpu_batch",
-                   return_value=torch.zeros(2, 3, 448, 448)), \
-             patch("benchmark_pipeline.predict_species_batch",
-                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
-            _run_detector_loop("yolo", loader, models, "cpu", gt, False, 1280)
-        assert mock_detect.call_count == n_batches
+        self._run(loader, det, gt)
+        assert det.detect_batch.call_count == n_batches
 
-    def test_gdino_calls_gdino_forward_batch_once_per_batch(self):
+    def test_pipeline_forward_preprocessed_called_once_per_batch(self):
+        """For supports_pipeline=True detectors, forward_preprocessed() is used."""
         from benchmark_pipeline import _run_detector_loop
         n_batches = 2
         loader = _make_fake_loader(n_batches=n_batches)
-        models = _make_models_for_loop("gdino")
+        det = _make_mock_detector(supports_pipeline=True, batch_size=2)
         gt = _gt_map(loader)
-        mock_forward    = MagicMock(return_value=[[], []])
-        mock_preprocess = MagicMock(return_value={"input_ids": torch.zeros(2, 5)})
-        with patch("benchmark_pipeline.gdino_forward_batch", mock_forward), \
-             patch("benchmark_pipeline.gdino_preprocess_batch", mock_preprocess), \
-             patch("benchmark_pipeline.make_crops_gpu_batch",
-                   return_value=torch.zeros(2, 3, 448, 448)), \
-             patch("benchmark_pipeline.predict_species_batch",
-                   return_value=[("Oak", 0.9), ("Oak", 0.9)]):
-            _run_detector_loop("gdino", loader, models, "cpu", gt, False, 1280)
-        assert mock_forward.call_count == n_batches
-
-    def test_rfdetr_calls_forward_from_cpu_tensors_once_per_batch(self):
-        from benchmark_pipeline import _run_detector_loop
-        n_batches = 2
-        loader = _make_fake_loader(n_batches=n_batches)
-        models = _make_models_for_loop("rf-detr")
-        gt = _gt_map(loader)
-        rfdetr = models["rfdetr_detector"]
+        dinov2 = _make_dinov2_for_loop(2)
         with patch("benchmark_pipeline.make_crops_gpu_batch",
                    return_value=torch.zeros(2, 3, 448, 448)), \
              patch("benchmark_pipeline.predict_species_batch",
                    return_value=[("Oak", 0.9), ("Oak", 0.9)]):
-            _run_detector_loop("rf-detr", loader, models, "cpu", gt, False, 1280)
-        assert rfdetr.forward_from_cpu_tensors.call_count == n_batches
+            _run_detector_loop(det, loader, "cpu", dinov2, MagicMock(), gt, False)
+        assert det.forward_preprocessed.call_count == n_batches
 
     def test_per_class_accumulated(self):
         from benchmark_pipeline import _run_detector_loop
         loader = _make_fake_loader(n_batches=1, batch_size=2)
-        models = _make_models_for_loop("yolo")
+        det = _make_mock_detector(supports_pipeline=False, batch_size=2)
         gt = {"/img/b0_i0.jpg": "Oak", "/img/b0_i1.jpg": "Elm"}
-        with patch("benchmark_pipeline.detect_yolo_batch",
-                   return_value=[[1, 2, 3, 4], [1, 2, 3, 4]]), \
-             patch("benchmark_pipeline.make_crops_gpu_batch",
+        dinov2 = _make_dinov2_for_loop(2)
+        with patch("benchmark_pipeline.make_crops_gpu_batch",
                    return_value=torch.zeros(2, 3, 448, 448)), \
              patch("benchmark_pipeline.predict_species_batch",
                    return_value=[("Oak", 0.9), ("Oak", 0.8)]):
             _, _, _, per_class = _run_detector_loop(
-                "yolo", loader, models, "cpu", gt, False, 1280)
-        assert per_class["Oak"]["total"]   == 1
-        assert per_class["Oak"]["correct"] == 1
-        assert per_class["Elm"]["total"]   == 1
-        assert per_class["Elm"]["correct"] == 0
+                det, loader, "cpu", dinov2, MagicMock(), gt, False,
+            )
+        assert per_class["Oak"]["total"] == 1 and per_class["Oak"]["correct"] == 1
+        assert per_class["Elm"]["total"] == 1 and per_class["Elm"]["correct"] == 0

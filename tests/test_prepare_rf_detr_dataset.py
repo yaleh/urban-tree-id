@@ -16,7 +16,7 @@ import yaml
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-SCRIPT = Path(__file__).parent.parent / "scripts" / "prepare_rf_detr_dataset.py"
+SCRIPT = Path(__file__).parent.parent / "scripts" / "training" / "prepare_rf_detr_dataset.py"
 PYTHON = Path(__file__).parent.parent / ".venv" / "bin" / "python"
 
 

@@ -26,11 +26,17 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+_scripts = Path(__file__).resolve().parent
+if str(_scripts) not in sys.path:
+    sys.path.insert(0, str(_scripts))
+from _path_setup import setup as _setup; _setup()  # noqa: E402
+
 from cli_common import add_detector_args  # noqa: E402
-from gdino_utils import gdino_preprocess  # noqa: E402  (scripts/ on sys.path)
+from gdino_utils import gdino_preprocess  # noqa: E402
 from image_utils import make_crop_xyxy as make_crop, DEFAULT_CROP_SIZE  # noqa: E402
 
 # ── Constants (mirrored from 03_extract_embeddings.py) ────────────────────────
@@ -142,8 +148,7 @@ def detect_rf_detr(pil_img, checkpoint: str = None, device: str = "cpu", detecto
     from rf_detr_detector import RFDETRDetector
     if detector is None:
         detector = RFDETRDetector(checkpoint=checkpoint, threshold=0.3, device=device)
-    boxes_np = detector.detect(pil_img)
-    return boxes_np.tolist()
+    return detector.detect(pil_img)  # already returns list[list[float]]
 
 
 # ── DINOv2 embedding ──────────────────────────────────────────────────────────
@@ -373,35 +378,23 @@ def predict_species_batch(embeddings: "np.ndarray", clf) -> list[tuple[str, floa
 def load_models(detector: str, device: str,
                 yolo_checkpoint: str | None = None,
                 svm_model_path: str | None = None,
-                rf_detr_checkpoint: str | None = None) -> dict:
-    """
-    Load all models once and return a dict.  Pass the dict to run_predict()
-    to avoid reloading models on every image.
+                rf_detr_checkpoint: str | None = None,
+                yolo_imgsz: int = 1280) -> dict:
+    """Load all models once and return a dict.
+
+    Pass the returned dict to run_predict() to avoid reloading on every image.
+    The "detector" key holds a BaseDetector instance; dinov2 and clf are stored
+    separately since they are shared across all detector types.
     """
     import joblib
     import torch
+    from detector_factory import make_detector
 
     models: dict = {"device": device}
 
-    if detector == "gdino":
-        from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-        models["gdino_proc"]  = AutoProcessor.from_pretrained(GDINO_MODEL)
-        models["gdino_model"] = (
-            AutoModelForZeroShotObjectDetection
-            .from_pretrained(GDINO_MODEL)
-            .to(device).eval()
-        )
-    elif detector == "yolo":
-        from ultralytics import YOLO
-        models["yolo_model"] = YOLO(yolo_checkpoint)
-    elif detector == "rf-detr":
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).parent))
-        from rf_detr_detector import RFDETRDetector
-        models["rfdetr_detector"] = RFDETRDetector(
-            checkpoint=rf_detr_checkpoint, threshold=0.3, device=device
-        )
+    checkpoint = yolo_checkpoint or rf_detr_checkpoint
+    models["detector"] = make_detector(detector, device=device, checkpoint=checkpoint,
+                                       imgsz=yolo_imgsz)
 
     models["dinov2"]    = torch.hub.load("facebookresearch/dinov2", DINOV2_MODEL).to(device).eval()
     models["transform"] = _make_transforms()
@@ -439,31 +432,13 @@ def run_predict(image_path: str, detector: str, svm_model_path: str,
     pil_img = Image.open(image_path).convert("RGB")
 
     # --- Detection ---
-    if detector == "gdino":
-        boxes = detect_gdino(
-            pil_img, _device,
-            proc=models.get("gdino_proc") if models else None,
-            model=models.get("gdino_model") if models else None,
-        )
-    elif detector == "yolo":
-        if not yolo_checkpoint and (not models or "yolo_model" not in models):
-            raise ValueError("--yolo-checkpoint required for --detector yolo")
-        boxes = detect_yolo(
-            pil_img,
-            checkpoint=yolo_checkpoint,
-            model=models.get("yolo_model") if models else None,
-        )
-    elif detector == "rf-detr":
-        if not rf_detr_checkpoint and (not models or "rfdetr_detector" not in models):
-            raise ValueError("--rf-detr-checkpoint required for --detector rf-detr")
-        boxes = detect_rf_detr(
-            pil_img,
-            checkpoint=rf_detr_checkpoint,
-            device=_device,
-            detector=models.get("rfdetr_detector") if models else None,
-        )
+    if models and "detector" in models:
+        det_obj = models["detector"]
     else:
-        raise ValueError(f"Unknown detector: {detector}")
+        from detector_factory import make_detector
+        checkpoint = yolo_checkpoint or rf_detr_checkpoint
+        det_obj = make_detector(detector, device=_device, checkpoint=checkpoint)
+    boxes = det_obj.detect(pil_img)
 
     n_boxes = len(boxes)
 

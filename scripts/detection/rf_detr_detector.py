@@ -1,7 +1,7 @@
-"""RF-DETR 推理封装，对齐 predict_pipeline.py 的 bbox 接口。
+"""RF-DETR 推理封装，实现 BaseDetector 接口。
 
-返回格式：List[np.ndarray]，每个元素为 shape (N, 4) xyxy 绝对像素坐标，
-与 GDino 路径的 res["boxes"] 格式一致。
+返回格式：list[list[float]]，每个内层 list 为 [x0, y0, x1, y1] 绝对像素坐标，
+与 GDino / YOLO 路径的格式完全一致。
 """
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ from typing import Union
 import numpy as np
 from PIL import Image
 
+from base_detector import BaseDetector
+
 _RFDETR_MEANS = [0.485, 0.456, 0.406]
 _RFDETR_STDS  = [0.229, 0.224, 0.225]
 
 
-class RFDETRDetector:
+class RFDETRDetector(BaseDetector):
     def __init__(
         self,
         checkpoint: Union[str, Path],
@@ -24,18 +26,24 @@ class RFDETRDetector:
     ):
         from rfdetr import RFDETRBase
 
-        # num_classes=0: rfdetr checks shape[0] == num_classes+1; our checkpoint has shape [1] (1 tree class)
+        # num_classes=0: rfdetr checks shape[0] == num_classes+1; our checkpoint has shape [1]
         self.model = RFDETRBase(pretrain_weights=str(checkpoint), device=device, num_classes=0)
         self.threshold = threshold
 
-    def detect(self, image: Union[str, Path, "Image.Image"]) -> np.ndarray:
-        """运行推理，返回 shape (N, 4) xyxy 绝对像素坐标数组。"""
+    # ── BaseDetector interface ───────────────────────────────────────────────────
+
+    @property
+    def supports_pipeline(self) -> bool:
+        return True
+
+    def detect(self, image: Union[str, Path, "Image.Image"]) -> list:
+        """运行推理，返回 [[x0, y0, x1, y1], ...] 绝对像素坐标列表。"""
         dets = self.model.predict(image, threshold=self.threshold)
         if len(dets.xyxy) == 0:
-            return np.zeros((0, 4), dtype=np.float32)
-        return dets.xyxy.astype(np.float32)
+            return []
+        return dets.xyxy.astype(np.float32).tolist()
 
-    def detect_batch(self, images: list) -> list[np.ndarray]:
+    def detect_batch(self, images: list) -> list[list]:
         """Serial fallback: one GPU call per image. Use detect_batch_gpu for throughput."""
         return [self.detect(img) for img in images]
 
@@ -62,6 +70,13 @@ class RFDETRDetector:
             orig_sizes.append((h, w))
             tensors_cpu.append(torch.from_numpy(arr).float().div(255.0).permute(2, 0, 1))
         return tensors_cpu, orig_sizes
+
+    def forward_preprocessed(self, preprocessed: tuple) -> list[list]:
+        """GPU forward pass given preprocess_cpu() output."""
+        tensors_cpu, orig_sizes = preprocessed
+        return self.forward_from_cpu_tensors(tensors_cpu, orig_sizes)
+
+    # ── High-throughput GPU-batch helpers ────────────────────────────────────────
 
     def forward_from_cpu_tensors(
         self,

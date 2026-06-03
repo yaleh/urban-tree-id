@@ -8,10 +8,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-# ultralytics is an optional runtime dep; stub it out so unit tests don't require
-# a GPU environment to import self_train.
-if "ultralytics" not in sys.modules:
-    sys.modules["ultralytics"] = MagicMock()
+# Ensure ultralytics is available; skip this module if not installed.
+ultralytics = pytest.importorskip("ultralytics")
 
 from self_train import (
     compute_intersection,
