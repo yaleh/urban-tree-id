@@ -151,6 +151,7 @@ def _run_detector_loop(
     clf,
     gt_labels_map: dict,
     throughput_only: bool,
+    crop_size: int = 448,
 ) -> "tuple[int, int, int, dict]":
     """Run batched detect → crop → embed → predict → score over a DataLoader.
 
@@ -170,7 +171,7 @@ def _run_detector_loop(
     def _process_batch(tensors, paths, batch_boxes):
         nonlocal n_total, n_correct, n_no_detection, per_class
         imgs_gpu     = [t.float().div(255.0).to(device, non_blocking=True) for t in tensors]
-        crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes)
+        crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes, target_size=crop_size)
         with torch.no_grad():
             feat = dinov2.forward_features(crops_tensor)
         embeddings   = feat["x_norm_clstoken"].cpu().float().numpy()
@@ -293,6 +294,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="Warmup duration in seconds before counting starts (default: 5)",
     )
+    parser.add_argument(
+        "--crop-size",
+        dest="crop_size",
+        type=int,
+        default=448,
+        help="DINOv2 input crop size in pixels (default: 448). "
+             "Must match the SVM model's training crop size.",
+    )
     return parser
 
 
@@ -336,12 +345,13 @@ def _preload_batches(
         imgs_cpu  = batch_t
         if detector_obj.supports_pipeline:
             prep = detector_obj.preprocess_cpu(batch_pil)
-            batches.append({"prep": prep, "imgs_cpu": imgs_cpu, "_batch_size": len(batch_t)})
+            batches.append({"prep": prep, "pil_imgs": batch_pil,
+                            "imgs_cpu": imgs_cpu, "_batch_size": len(batch_t)})
         else:
             # HWC numpy arrays: skip Ultralytics' internal PIL→numpy conversion (~15ms/img)
             batch_np = [t.permute(1, 2, 0).contiguous().numpy() for t in batch_t]
-            batches.append({"batch_np": batch_np, "imgs_cpu": imgs_cpu,
-                            "_batch_size": len(batch_t)})
+            batches.append({"batch_np": batch_np, "pil_imgs": batch_pil,
+                            "imgs_cpu": imgs_cpu, "_batch_size": len(batch_t)})
     return batches
 
 
@@ -354,6 +364,7 @@ def _run_timed_bench(
     duration: float,
     warmup: float,
     log_fn,
+    crop_size: int = 448,
 ) -> tuple[int, int, float, float]:
     """Loop over preloaded batches for warmup+duration seconds.
 
@@ -363,7 +374,7 @@ def _run_timed_bench(
     import time
     import torch
 
-    torch.cuda.empty_cache()  # release any pool fragmentation from preload phase
+    torch.cuda.empty_cache()
 
     n_batches  = len(preloaded)
     t0         = time.perf_counter()
@@ -394,15 +405,15 @@ def _run_timed_bench(
         # H2D after detection: YOLO activations released before image tensors live on GPU
         imgs_gpu = [t.float().div(255.0).to(device, non_blocking=True)
                     for t in batch["imgs_cpu"]]
-        crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes)
-        del imgs_gpu  # free image batch before DINOv2 forward
+        crops_tensor = make_crops_gpu_batch(imgs_gpu, batch_boxes, target_size=crop_size)
+        del imgs_gpu
 
         with torch.no_grad():
             feat = dinov2.forward_features(crops_tensor)
-        del crops_tensor  # free crop batch before next iteration
+        del crops_tensor
 
         embeddings = feat["x_norm_clstoken"].cpu().float().numpy()
-        del feat  # free DINOv2 output dict (holds GPU tensors)
+        del feat
 
         predict_species_batch(embeddings, clf)
 
@@ -486,6 +497,7 @@ def main():
         svm_model_path    = args.svm_model,
         rf_detr_checkpoint= args.rf_detr_checkpoint,
         yolo_imgsz        = yolo_imgsz,
+        crop_size         = args.crop_size,
     )
     log.info("Models loaded.")
 
@@ -516,6 +528,7 @@ def main():
             preloaded, models["detector"], device,
             models["dinov2"], models["clf"],
             args.duration, args.warmup, log.info,
+            crop_size=args.crop_size,
         )
         log.info(
             f"Timed-bench results: {n_total} imgs measured  "
@@ -560,6 +573,7 @@ def main():
         models["detector"], loader, device,
         models["dinov2"], models["clf"],
         gt_labels_map, args.throughput_only,
+        crop_size=args.crop_size,
     )
 
     elapsed = time.perf_counter() - t0

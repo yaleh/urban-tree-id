@@ -616,6 +616,132 @@ class TestTimedBenchArgs:
         args = self._parse(["--timed-bench"])
         assert args.warmup == 5
 
+    def test_crop_size_arg_exists(self):
+        args = self._parse(["--crop-size", "224"])
+        assert args.crop_size == 224
+
+    def test_crop_size_default_448(self):
+        assert self._parse().crop_size == 448
+
+
+class TestCropSizeFlow:
+    """--crop-size flows through load_models → transform and → make_crops_gpu_batch."""
+
+    def _parse(self, extra=None):
+        from benchmark_pipeline import build_parser
+        argv = ["--detector", "gdino", "--test-dir", "/tmp",
+                "--svm-model", "m.joblib", "--throughput-only"]
+        if extra:
+            argv += extra
+        return build_parser().parse_args(argv)
+
+    # ── _make_transforms ─────────────────────────────────────────────────────
+
+    def test_make_transforms_default_produces_448_tensor(self):
+        from predict_pipeline import _make_transforms
+        from PIL import Image
+        t = _make_transforms()
+        out = t(Image.new("RGB", (600, 600)))
+        assert out.shape == (3, 448, 448)
+
+    def test_make_transforms_224_produces_224_tensor(self):
+        from predict_pipeline import _make_transforms
+        from PIL import Image
+        t = _make_transforms(224)
+        out = t(Image.new("RGB", (600, 600)))
+        assert out.shape == (3, 224, 224)
+
+    def test_make_transforms_size_arg_is_respected(self):
+        from predict_pipeline import _make_transforms
+        from PIL import Image
+        for size in (112, 256, 336):
+            t = _make_transforms(size)
+            out = t(Image.new("RGB", (600, 600)))
+            assert out.shape == (3, size, size), f"Expected {size}, got {out.shape}"
+
+    # ── load_models ───────────────────────────────────────────────────────────
+
+    def test_load_models_stores_transform_at_224(self):
+        from predict_pipeline import load_models
+        from PIL import Image
+        from unittest.mock import patch, MagicMock
+        dummy_dinov2 = MagicMock()
+        with patch("torch.hub.load", return_value=dummy_dinov2), \
+             patch("detector_factory.make_detector", return_value=MagicMock()), \
+             patch("joblib.load", return_value=MagicMock()):
+            models = load_models("gdino", "cpu",
+                                 svm_model_path="x.joblib", crop_size=224)
+        out = models["transform"](Image.new("RGB", (600, 600)))
+        assert out.shape == (3, 224, 224)
+
+    def test_load_models_default_transform_is_448(self):
+        from predict_pipeline import load_models
+        from PIL import Image
+        from unittest.mock import patch, MagicMock
+        dummy_dinov2 = MagicMock()
+        with patch("torch.hub.load", return_value=dummy_dinov2), \
+             patch("detector_factory.make_detector", return_value=MagicMock()), \
+             patch("joblib.load", return_value=MagicMock()):
+            models = load_models("gdino", "cpu", svm_model_path="x.joblib")
+        out = models["transform"](Image.new("RGB", (600, 600)))
+        assert out.shape == (3, 448, 448)
+
+    # ── _run_timed_bench ──────────────────────────────────────────────────────
+
+    def test_run_timed_bench_passes_crop_size_to_make_crops(self):
+        """make_crops_gpu_batch must be called with target_size=crop_size."""
+        from benchmark_pipeline import _run_timed_bench
+        from unittest.mock import patch, MagicMock, call
+        import torch
+
+        batch_size = 2
+        imgs_cpu = [torch.zeros(3, 64, 64, dtype=torch.uint8) for _ in range(batch_size)]
+        preloaded = [{"prep": {}, "imgs_cpu": imgs_cpu, "_batch_size": batch_size}]
+        det = MagicMock()
+        det.supports_pipeline = True
+        det.forward_preprocessed.return_value = [[] for _ in range(batch_size)]
+        dinov2 = MagicMock()
+        dinov2.forward_features.return_value = {"x_norm_clstoken": torch.zeros(1, 384)}
+
+        captured = {}
+        def fake_make_crops(imgs_gpu, batch_boxes, target_size=448, **kw):
+            captured["target_size"] = target_size
+            return torch.zeros(0, 3, target_size, target_size)
+
+        with patch("benchmark_pipeline.make_crops_gpu_batch", side_effect=fake_make_crops), \
+             patch("benchmark_pipeline.predict_species_batch", return_value=[]):
+            _run_timed_bench(preloaded, det, "cpu", dinov2, MagicMock(),
+                             duration=0.1, warmup=0.0, log_fn=lambda _: None,
+                             crop_size=224)
+
+        assert captured.get("target_size") == 224
+
+    def test_run_timed_bench_default_crop_size_is_448(self):
+        from benchmark_pipeline import _run_timed_bench
+        from unittest.mock import patch, MagicMock
+        import torch
+
+        batch_size = 2
+        imgs_cpu = [torch.zeros(3, 64, 64, dtype=torch.uint8) for _ in range(batch_size)]
+        preloaded = [{"prep": {}, "imgs_cpu": imgs_cpu, "_batch_size": batch_size}]
+        det = MagicMock()
+        det.supports_pipeline = True
+        det.forward_preprocessed.return_value = [[] for _ in range(batch_size)]
+        dinov2 = MagicMock()
+        dinov2.forward_features.return_value = {"x_norm_clstoken": torch.zeros(1, 384)}
+
+        captured = {}
+        def fake_make_crops(imgs_gpu, batch_boxes, target_size=448, **kw):
+            captured["target_size"] = target_size
+            return torch.zeros(0, 3, target_size, target_size)
+
+        with patch("benchmark_pipeline.make_crops_gpu_batch", side_effect=fake_make_crops), \
+             patch("benchmark_pipeline.predict_species_batch", return_value=[]):
+            _run_timed_bench(preloaded, det, "cpu", dinov2, MagicMock(),
+                             duration=0.1, warmup=0.0, log_fn=lambda _: None)
+
+        assert captured.get("target_size") == 448
+
 
 def _make_mock_detector(supports_pipeline=False, batch_size=2):
     """Return a mock BaseDetector for testing loop functions."""

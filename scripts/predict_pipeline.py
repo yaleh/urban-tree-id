@@ -54,11 +54,11 @@ TARGET_SIZE   = DEFAULT_CROP_SIZE
 
 # ── Preprocessing (copied verbatim from 03_extract_embeddings.py) ─────────────
 
-def _make_transforms():
+def _make_transforms(size: int = TARGET_SIZE):
     import torchvision.transforms as T
     return T.Compose([
-        T.Resize(TARGET_SIZE),
-        T.CenterCrop(TARGET_SIZE),
+        T.Resize(size),
+        T.CenterCrop(size),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -379,7 +379,8 @@ def load_models(detector: str, device: str,
                 yolo_checkpoint: str | None = None,
                 svm_model_path: str | None = None,
                 rf_detr_checkpoint: str | None = None,
-                yolo_imgsz: int = 1280) -> dict:
+                yolo_imgsz: int = 1280,
+                crop_size: int = TARGET_SIZE) -> dict:
     """Load all models once and return a dict.
 
     Pass the returned dict to run_predict() to avoid reloading on every image.
@@ -397,7 +398,8 @@ def load_models(detector: str, device: str,
                                        imgsz=yolo_imgsz)
 
     models["dinov2"]    = torch.hub.load("facebookresearch/dinov2", DINOV2_MODEL).to(device).eval()
-    models["transform"] = _make_transforms()
+    models["transform"] = _make_transforms(crop_size)
+    models["crop_size"] = crop_size
     if svm_model_path:
         models["clf"] = joblib.load(svm_model_path)
 
