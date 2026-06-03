@@ -139,7 +139,7 @@ def _run_gdino_batch(
         orig_sizes = [(pil.size[1], pil.size[0]) for pil in pil_imgs]
         results = processor.post_process_grounded_object_detection(
             out, input_ids,
-            box_threshold=box_threshold,
+            threshold=box_threshold,
             text_threshold=text_threshold,
             target_sizes=orig_sizes,
         )

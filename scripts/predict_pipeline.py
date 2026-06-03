@@ -105,7 +105,7 @@ def detect_gdino(pil_img, device, proc=None, model=None):
     results = proc.post_process_grounded_object_detection(
         out,
         input_ids,
-        box_threshold=GDINO_BOX_THR,
+        threshold=GDINO_BOX_THR,
         text_threshold=GDINO_TEXT_THR,
         target_sizes=[(H_orig, W_orig)],
     )
@@ -235,7 +235,7 @@ def gdino_forward_batch(
     results = proc.post_process_grounded_object_detection(
         out,
         inputs_gpu["input_ids"],
-        box_threshold=GDINO_BOX_THR,
+        threshold=GDINO_BOX_THR,
         text_threshold=GDINO_TEXT_THR,
         target_sizes=target_sizes,
     )
