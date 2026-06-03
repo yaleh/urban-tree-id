@@ -111,9 +111,9 @@ class RFDETRDetector(BaseDetector):
         inner.eval()
         with torch.inference_mode():
             predictions = inner(batch)
-            results = rf_model.postprocessors["bbox"](
+            results = rf_model.postprocess(
                 predictions,
-                target_sizes=torch.tensor(orig_sizes, device=device),
+                torch.tensor(orig_sizes, device=device),
             )
 
         batch_boxes: list[list] = []
