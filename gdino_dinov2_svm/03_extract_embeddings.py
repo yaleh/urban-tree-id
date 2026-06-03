@@ -129,7 +129,7 @@ class TDUSDataset(Dataset):
 
 def extract_split(split, data_dir, out_dir, gdino_proc, gdino_model,
                   dinov2, device, batch_size, num_workers, text, score_thr,
-                  dataset_format="urban"):
+                  dataset_format="urban", crop_size=448):
     out_path = Path(out_dir) / f"{split}.npz"
     if out_path.exists():
         log.info(f"{split}: {out_path} exists, skipping")
@@ -175,6 +175,12 @@ def extract_split(split, data_dir, out_dir, gdino_proc, gdino_model,
             target_sizes=orig_sizes,
         )
 
+        dinov2_transform = T.Compose([
+            T.Resize(crop_size),
+            T.CenterCrop(crop_size),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
         crops = []
         for i, (res, pil) in enumerate(zip(results, pil_imgs)):
             boxes = res["boxes"].cpu().tolist()
@@ -182,11 +188,11 @@ def extract_split(split, data_dir, out_dir, gdino_proc, gdino_model,
                 # pick largest-area box (matches notebook behaviour)
                 areas = [(b[2]-b[0])*(b[3]-b[1]) for b in boxes]
                 best_idx = int(np.argmax(areas))
-                crop = make_crop(pil, boxes[best_idx])
+                crop = make_crop(pil, boxes[best_idx], target_size=crop_size)
             else:
                 n_fallback += 1
-                crop = pil.resize((TARGET_SIZE, TARGET_SIZE), Image.LANCZOS)
-            crops.append(DINOV2_TRANSFORM(crop))
+                crop = pil.resize((crop_size, crop_size), Image.LANCZOS)
+            crops.append(dinov2_transform(crop))
 
         crop_batch = torch.stack(crops).to(device, non_blocking=True)
         with torch.no_grad():
@@ -216,6 +222,8 @@ def main():
     parser.add_argument("--batch-size",      type=int, default=8)
     parser.add_argument("--num-workers",     type=int, default=4)
     parser.add_argument("--dataset-format",  default="urban", choices=["urban", "tdus"])
+    parser.add_argument("--crop-size",       type=int, default=448,
+                        help="DINOv2 input crop size (default: 448)")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -230,11 +238,12 @@ def main():
     log.info(f"Loading DINOv2 {DINOV2_MODEL}...")
     dinov2 = torch.hub.load("facebookresearch/dinov2", DINOV2_MODEL).to(device).eval()
 
+    log.info(f"Crop size: {args.crop_size}px")
     for split in args.splits:
         extract_split(split, args.data_dir, args.out_dir,
                       gdino_proc, gdino_model, dinov2, device,
                       args.batch_size, args.num_workers, args.text, args.score_thr,
-                      args.dataset_format)
+                      args.dataset_format, crop_size=args.crop_size)
         torch.cuda.empty_cache()
 
     log.info("Done.")
