@@ -10,13 +10,21 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 
-# Large model weights (symlinked or downloaded separately)
+# Datasets and large binary data (hosted on HuggingFace)
+data/
+
+# Pretrained model weights (download separately per README)
 *.pth
 *.pt
-!runs/**/weights/best.pt
 
-# Embeddings (large .npz files)
-gdino_dinov2_svm/embeddings/
+# Embeddings and experiment outputs (large, not tracked)
+gdino_dinov2_svm/embeddings*/
+gdino_dinov2_svm/results*/
+benchmark_results.json
+
+# Training runs and results
+runs/
+results/
 
 # Logs and runtime output
 logs/
