@@ -18,7 +18,7 @@ python3 scripts/predict_pipeline.py \
   --image path/to/image.jpg \
   --detector yolo \
   --yolo-checkpoint data/model_weights/tree_yolo26s_unified_halfres_tdus/best.pt \
-  --svm-model gdino_dinov2_svm/results_518/svm_model.joblib
+  --svm-model gdino_dinov2_svm/results/svm_model.joblib
 ```
 
 ### Benchmark (batch evaluation with accuracy)
@@ -29,8 +29,8 @@ python3 scripts/benchmark_pipeline.py \
   --yolo-checkpoint data/model_weights/tree_yolo26s_unified_halfres_tdus/best.pt \
   --test-dir /path/to/tdus/test/img \
   --ann-dir /path/to/tdus/test/ann \
-  --svm-model gdino_dinov2_svm/results_518/svm_model.joblib \
-  --crop-size 518 --batch-size 32
+  --svm-model gdino_dinov2_svm/results/svm_model.joblib \
+  --crop-size 448 --batch-size 32
 ```
 
 Add `--timed-bench` to measure throughput only (pre-loads images, excludes I/O).

@@ -15,10 +15,10 @@ hf_hub_download(
     local_dir=".",
 )
 
-# SVM classifier (518px crop, highest accuracy)
+# SVM classifier (448px crop, recommended default)
 hf_hub_download(
     repo_id="yaleh/urban-tree-id",
-    filename="model_weights/svm/gdino_dinov2_518px/svm_model.joblib",
+    filename="model_weights/svm/gdino_dinov2_448px/svm_model.joblib",
     local_dir=".",
 )
 ```
@@ -31,16 +31,18 @@ huggingface-cli download yaleh/urban-tree-id --local-dir .
 
 ## YOLO Checkpoints
 
-| Checkpoint | Test acc (pipeline) | no_det / 386 | img/s | Training data |
-|-----------|---------------------|--------------|-------|---------------|
-| `tree_yolo26s_unified_halfres_tdus` | **96.1%** | **0** | 8.5 | unified: video frames + TDUS |
-| `tree_yolo26s_b10` | 71.2% | 35 | 7.8 | video frame pseudo-labels |
-| `tree_yolo26s_halfres` | — | — | — | video frame pseudo-labels (half-res) |
+| Checkpoint | SVM crop | Test acc (pipeline) | no_det / 386 | img/s | Training data |
+|-----------|----------|---------------------|--------------|-------|---------------|
+| `tree_yolo26s_unified_halfres_tdus` | 448px | **94.82%** | **0** | 8.8 | unified: video frames + TDUS |
+| `tree_yolo26s_unified_halfres_tdus` | 518px | 96.1% | 0 | 8.5 | unified: video frames + TDUS |
+| `tree_yolo26s_b10` | 518px | 71.2% | 35 | 7.8 | video frame pseudo-labels |
+| `tree_yolo26s_halfres` | — | — | — | — | video frame pseudo-labels (half-res) |
 
-Pipeline accuracy measured on TDUS test split (386 images) with SVM `gdino_dinov2_518px`, crop_size=518.
+Pipeline accuracy measured on TDUS test split (386 images, imgsz=1280).
 
-**Recommended:** `tree_yolo26s_unified_halfres_tdus` — trained on combined video-frame and TDUS data,
-zero missed detections on the test split.
+**Recommended:** `tree_yolo26s_unified_halfres_tdus` + `svm/gdino_dinov2_448px` (448px crop) —
+94.82% test acc, zero missed detections, 2.9× GDino throughput.
+Use 518px SVM for +1.3pp accuracy at a minor throughput cost.
 
 ## SVM Classifiers
 

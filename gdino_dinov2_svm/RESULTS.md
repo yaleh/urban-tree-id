@@ -29,7 +29,8 @@ on the TDUS test split with the stated YOLO checkpoint + SVM combination.
 
 | YOLO checkpoint | SVM crop | Test acc | no_det | img/s | Notes |
 |-----------------|----------|----------|--------|-------|-------|
-| `tree_yolo26s_unified_halfres_tdus` | 518px | **96.1%** | **0** | 8.5 | trained on video + TDUS; recommended |
+| `tree_yolo26s_unified_halfres_tdus` | 448px | **94.82%** | **0** | 8.8 | recommended default |
+| `tree_yolo26s_unified_halfres_tdus` | 518px | 96.1% | 0 | 8.5 | +1.3pp acc, −3% throughput |
 | GDino-tiny (no YOLO) | 448px | 94.0% | 0 | 3.0 | GDino detector baseline |
 | `tree_yolo26s_b10` | 518px | 71.2% | 35 | 7.8 | trained on video frames only; domain mismatch |
 
@@ -38,7 +39,7 @@ Notes:
   frames; TDUS test images are portrait close-ups) and because the SVM was trained on GDino crops
   while inference uses YOLO crops.
 - `tree_yolo26s_unified_halfres_tdus` resolves both issues by training on a combined dataset that
-  includes TDUS images, achieving higher accuracy than GDino at 2.8× the throughput.
+  includes TDUS images, achieving higher accuracy than GDino at 2.9× the throughput.
 
 ## Throughput
 
@@ -65,5 +66,6 @@ GDino is the throughput bottleneck; DINOv2 crop size (448 vs 518px) has negligib
 | `tree_yolo26s_b10` | 224px | 64 | 34.7 | imgsz=960; accuracy −8pp vs 448px |
 | `tree_yolo26s_b10` | 518px | 64 | 20.1 | imgsz=960; measured 2026-06-03 |
 
-**Recommended production configuration:** `tree_yolo26s_unified_halfres_tdus` + SVM 518px crop
-(96.1% test acc, 8.5 img/s, zero missed detections on test split).
+**Recommended production configuration:** `tree_yolo26s_unified_halfres_tdus` + SVM 448px crop
+(94.82% test acc, 8.8 img/s, zero missed detections on test split).
+Use 518px SVM for +1.3pp accuracy at a minor throughput cost (8.5 img/s).
