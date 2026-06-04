@@ -56,16 +56,18 @@ GPU: NVIDIA (12 GB VRAM)
 
 GDino is the throughput bottleneck; DINOv2 crop size (448 vs 518px) has negligible impact on img/s.
 
-### YOLO detector (1280px imgsz)
+### YOLO detector
 
-| YOLO checkpoint | Crop size | Batch | img/s | Notes |
-|-----------------|-----------|-------|-------|-------|
-| `tree_yolo26s_unified_halfres_tdus` | 518px | 32 | 8.5 | measured 2026-06-04 |
-| `tree_yolo26s_b10` | 518px | 32 | 7.8 | measured 2026-06-04 |
-| `tree_yolo26s_b10` | 448px | 64 | 25.4 | measured 2026-06-03, commit d4f14e8; imgsz=960 |
-| `tree_yolo26s_b10` | 224px | 64 | 34.7 | imgsz=960; accuracy −8pp vs 448px |
-| `tree_yolo26s_b10` | 518px | 64 | 20.1 | imgsz=960; measured 2026-06-03 |
+"timed" = `--timed-bench` (images pre-loaded, I/O excluded); "wall" = full pipeline including I/O.
 
-**Recommended production configuration:** `tree_yolo26s_unified_halfres_tdus` + SVM 448px crop
-(94.82% test acc, 8.8 img/s, zero missed detections on test split).
-Use 518px SVM for +1.3pp accuracy at a minor throughput cost (8.5 img/s).
+| YOLO checkpoint | Crop | imgsz | Batch | img/s | Mode | Notes |
+|-----------------|------|-------|-------|-------|------|-------|
+| `tree_yolo26s_unified_halfres_tdus` | 448px | 960 | 64 | **21.5** | timed | measured 2026-06-04 |
+| `tree_yolo26s_unified_halfres_tdus` | 448px | 1280 | 32 | 8.8 | wall | measured 2026-06-04 |
+| `tree_yolo26s_b10` | 448px | 960 | 64 | 25.4 | timed | measured 2026-06-03, commit d4f14e8 |
+| `tree_yolo26s_b10` | 224px | 960 | 64 | 34.7 | timed | −8pp accuracy vs 448px |
+| `tree_yolo26s_b10` | 518px | 960 | 64 | 20.1 | timed | measured 2026-06-03 |
+
+**Recommended production configuration:** `tree_yolo26s_unified_halfres_tdus` + SVM 448px crop,
+imgsz=960, batch=64 (94.82% test acc, 21.5 img/s timed, zero missed detections).
+Use 518px SVM for +1.3pp accuracy at ~15% throughput cost.
