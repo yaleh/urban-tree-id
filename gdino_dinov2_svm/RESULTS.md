@@ -22,6 +22,24 @@ Notes:
 - DINOv2 was pre-trained at 224px; 448px = 4× patch count; 518px = paper-standard eval resolution
 - All three runs use identical image sets (label arrays verified identical across crop sizes)
 
+## End-to-End Pipeline Accuracy (TDUS test split, 386 images)
+
+Pipeline accuracy depends on both the detector and SVM. Results below use `benchmark_pipeline.py`
+on the TDUS test split with the stated YOLO checkpoint + SVM combination.
+
+| YOLO checkpoint | SVM crop | Test acc | no_det | img/s | Notes |
+|-----------------|----------|----------|--------|-------|-------|
+| `tree_yolo26s_unified_halfres_tdus` | 518px | **96.1%** | **0** | 8.5 | trained on video + TDUS; recommended |
+| GDino-tiny (no YOLO) | 448px | 94.0% | 0 | 3.0 | GDino detector baseline |
+| `tree_yolo26s_b10` | 518px | 71.2% | 35 | 7.8 | trained on video frames only; domain mismatch |
+
+Notes:
+- `tree_yolo26s_b10` accuracy is low due to training/test domain mismatch (trained on dashcam video
+  frames; TDUS test images are portrait close-ups) and because the SVM was trained on GDino crops
+  while inference uses YOLO crops.
+- `tree_yolo26s_unified_halfres_tdus` resolves both issues by training on a combined dataset that
+  includes TDUS images, achieving higher accuracy than GDino at 2.8× the throughput.
+
 ## Throughput
 
 GPU: NVIDIA (12 GB VRAM)
@@ -37,13 +55,15 @@ GPU: NVIDIA (12 GB VRAM)
 
 GDino is the throughput bottleneck; DINOv2 crop size (448 vs 518px) has negligible impact on img/s.
 
-### YOLO detector (960px imgsz)
+### YOLO detector (1280px imgsz)
 
-| Crop size | Batch | img/s | Notes |
-|-----------|-------|-------|-------|
-| 448px     | 64    | 25.4  | measured 2026-06-03, commit d4f14e8 |
-| 224px     | 64    | 34.7  | +37% vs 448px; accuracy −8pp |
-| 518px     | 64    | 20.1  | measured 2026-06-03; −21% vs 448px |
+| YOLO checkpoint | Crop size | Batch | img/s | Notes |
+|-----------------|-----------|-------|-------|-------|
+| `tree_yolo26s_unified_halfres_tdus` | 518px | 32 | 8.5 | measured 2026-06-04 |
+| `tree_yolo26s_b10` | 518px | 32 | 7.8 | measured 2026-06-04 |
+| `tree_yolo26s_b10` | 448px | 64 | 25.4 | measured 2026-06-03, commit d4f14e8; imgsz=960 |
+| `tree_yolo26s_b10` | 224px | 64 | 34.7 | imgsz=960; accuracy −8pp vs 448px |
+| `tree_yolo26s_b10` | 518px | 64 | 20.1 | imgsz=960; measured 2026-06-03 |
 
-**Recommended production configuration:** YOLO 960px + DINOv2 448px crop + SVM (25.4 img/s, 95.3% test acc).
-518px adds +1.6pp accuracy at −21% throughput (20.1 img/s); 224px saves +37% throughput but costs −8pp accuracy.
+**Recommended production configuration:** `tree_yolo26s_unified_halfres_tdus` + SVM 518px crop
+(96.1% test acc, 8.5 img/s, zero missed detections on test split).
