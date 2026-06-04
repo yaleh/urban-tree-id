@@ -11,11 +11,13 @@ build/
 .ipynb_checkpoints/
 
 # Datasets and large binary data (hosted on HuggingFace)
-data/
+data/*
+!data/model_weights
 
 # Pretrained model weights (download separately per README)
 *.pth
 *.pt
+!data/model_weights/**/*.pt
 
 # Embeddings and experiment outputs (large, not tracked)
 gdino_dinov2_svm/embeddings*/
