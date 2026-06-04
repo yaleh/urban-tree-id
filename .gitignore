@@ -13,11 +13,11 @@ build/
 # Datasets and large binary data (hosted on HuggingFace)
 data/*
 !data/model_weights
+!data/model_weights/README.md
 
-# Pretrained model weights (download separately per README)
+# Pretrained model weights (hosted on HuggingFace — see data/model_weights/README.md)
 *.pth
 *.pt
-!data/model_weights/**/*.pt
 
 # Embeddings and experiment outputs (large, not tracked)
 gdino_dinov2_svm/embeddings*/
